@@ -23,7 +23,7 @@ let globalSalesDetails = [];
 let globalInvLogs = []; 
 let emailSettingsData = { list: [], selected: [] };
 
-// 【優化】髒讀防護：紀錄前端取得資料時的最後更新時間
+// 髒讀防護：紀錄前端取得資料時的最後更新時間
 let myLastSyncTime = 0;
 
 // AI 暫存與目前狀態
@@ -56,14 +56,14 @@ async function callApi(action, payload = {}) {
 }
 
 // ============================================================================
-// 背景同步佇列系統 (強化防卡死機制與 LocalStorage 容錯)
+// 背景同步佇列系統 (LocalStorage 容錯 + 默默更新機制)
 // ============================================================================
 let bgSyncQueue = []; 
 let isSyncing = false; 
 let syncTimeoutTimer = null;
 
 function pushToSyncQueue(action, payload, callback) { 
-    // 【優化】發送重要更新時，附加前端時間戳記以供後端進行「髒讀比對」
+    // 發送更新時，附加前端時間戳記以供後端進行「危險操作」的髒讀比對
     if (payload && typeof payload === 'object') {
         payload.clientSyncTime = myLastSyncTime;
     }
@@ -90,12 +90,15 @@ function triggerSync() {
         if(task.callback) task.callback(res); 
         updateSyncIndicator(); 
         isSyncing = false; 
-        triggerSync();
+        
+        // 【優化】當佇列清空（代表操作順利寫入）時，自動在背景默默抓取最新資料
+        if (bgSyncQueue.length === 0) silentRefreshData();
+        else triggerSync();
     }).catch(e => {
         clearTimeout(syncTimeoutTimer);
         console.error("背景傳輸異常", e); 
-        // 【優化】如果是髒讀錯誤，強制停止此任務並要求重整，絕對不重試
-        if (e.message.includes("DIRTY_READ")) {
+        // 若為髒讀錯誤，強制停止此任務並要求重整，絕對不重試
+        if (e.message && e.message.includes("DIRTY_READ")) {
             alert(e.message);
             bgSyncQueue.shift();
             isSyncing = false;
@@ -163,6 +166,20 @@ function updateSyncIndicator() {
     } 
 }
 
+// 【優化】背景默默同步 (不鎖畫面、不跳提示)
+function silentRefreshData() {
+    callApi('getInitData', {}).then(res => {
+        globalClients = res.clients||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
+        if (res.emailSettings) emailSettingsData = res.emailSettings;
+        myLastSyncTime = res.serverSyncTime || Date.now();
+        populateAdminClientFilter(); updateHistoryDropdowns(); populateLogDropdowns(); updateOrderClientDropdown(); renderEmailSettings();
+        if(document.getElementById('sys-history').style.display === 'block') { window.renderHistory(); generateReport(); }
+        if(document.getElementById('sys-admin').style.display === 'block') { window.renderAdminItems(); window.renderAdminClients(); }
+        if(document.getElementById('sys-order').style.display === 'block') window.renderOrderList();
+        if(document.getElementById('sys-inventory').style.display === 'block') { window.renderInventory(); window.renderInvLogs(); renderShipments(); }
+    }).catch(err => console.log('背景默默同步失敗:', err));
+}
+
 // ============================================================================
 // 基礎工具、UI 函式與 Debounce 防抖
 // ============================================================================
@@ -176,7 +193,7 @@ function showLoading(msg="處理中...") { document.getElementById('miniLoadingT
 function hideLoading() { document.getElementById('miniLoading').style.display = 'none'; }
 function showToast(msg) { const tb = document.getElementById('toastBox'); tb.innerText = msg; tb.style.display = 'block'; setTimeout(()=> tb.style.opacity = '1', 10); setTimeout(() => { tb.style.opacity = '0'; setTimeout(()=> tb.style.display = 'none', 300); }, 2500); }
 
-// 【優化】防抖函數：延遲執行，避免打字時畫面頻繁重繪卡頓
+// 防抖函數：延遲執行，避免打字時畫面頻繁重繪卡頓
 function debounce(func, delay = 300) {
     let timer;
     return function(...args) {
@@ -269,7 +286,7 @@ function initSystemData() {
         clearInterval(intv); setProgress(100, '✅ 準備完成！');
         globalClients = res.clients || []; globalCatalog = res.catalog || []; globalHistory = res.history || []; globalOrders = res.orders || []; globalInventory = res.inventory || []; globalSalesDetails = res.salesDetails || []; globalInvLogs = res.invLogs || [];
         if (res.emailSettings) emailSettingsData = res.emailSettings;
-        myLastSyncTime = res.serverSyncTime || Date.now(); // 紀錄同步時間，作為髒讀防護基準
+        myLastSyncTime = res.serverSyncTime || Date.now();
         
         populateAdminClientFilter(); updateHistoryDropdowns(); populateLogDropdowns(); updateOrderClientDropdown(); renderEmailSettings();
         document.getElementById('mqMonthCount').innerText = `🧾 本月已開立 ${res.monthCount} 張`; 
