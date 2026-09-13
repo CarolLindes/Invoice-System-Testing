@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 長固 ERP 系統 - 前端核心運算邏輯 (測試環境優化版)
+ * 長固 ERP 系統 - 前端核心運算邏輯 (測試環境優化版 + 訂購單擴充)
  * ============================================================================
  */
 
@@ -15,6 +15,7 @@ let myUid = localStorage.getItem('invUid') || Math.random().toString(36).substri
 localStorage.setItem('invUid', myUid);
 
 let globalClients = []; 
+let globalSuppliers = []; // 【擴充】儲存供應商資料
 let globalCatalog = []; 
 let globalHistory = []; 
 let globalOrders = []; 
@@ -165,7 +166,7 @@ function updateSyncIndicator() {
 
 function silentRefreshData() {
     callApi('getInitData', {}).then(res => {
-        globalClients = res.clients||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
+        globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         populateAdminClientFilter(); updateHistoryDropdowns(); populateLogDropdowns(); updateOrderClientDropdown(); renderEmailSettings();
@@ -279,7 +280,7 @@ function initSystemData() {
     const intv = setInterval(() => { fakeProgress += (85 - fakeProgress) * 0.15; setProgress(fakeProgress); }, 500);
     callApi('getInitData', {}).then(res => {
         clearInterval(intv); setProgress(100, '✅ 準備完成！');
-        globalClients = res.clients || []; globalCatalog = res.catalog || []; globalHistory = res.history || []; globalOrders = res.orders || []; globalInventory = res.inventory || []; globalSalesDetails = res.salesDetails || []; globalInvLogs = res.invLogs || [];
+        globalClients = res.clients || []; globalSuppliers = res.suppliers || []; globalCatalog = res.catalog || []; globalHistory = res.history || []; globalOrders = res.orders || []; globalInventory = res.inventory || []; globalSalesDetails = res.salesDetails || []; globalInvLogs = res.invLogs || [];
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -295,7 +296,7 @@ function initSystemData() {
 function refreshData() {
     showLoading("同步最新資料...");
     callApi('getInitData', {}).then(res => {
-        globalClients = res.clients||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
+        globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         populateAdminClientFilter(); updateHistoryDropdowns(); populateLogDropdowns(); updateOrderClientDropdown(); renderEmailSettings();
@@ -346,7 +347,7 @@ function triggerManualReport() {
 }
 
 // ============================================================================
-// 訂單模組 (Debounced + 來源標籤擴充)
+// 訂單模組
 // ============================================================================
 function processOrderUpload(input) {
     if(!input.files || !input.files[0]) return; const file = input.files[0]; const mimeType = file.type || 'application/pdf'; const reader = new FileReader();
@@ -377,7 +378,6 @@ function saveOrderAI() {
     aiTempData.department = document.getElementById('aiDept').value; 
     aiTempData.deadline = document.getElementById('aiDeadline').value;
     
-    // 【修改】為圖片上傳的訂單補上專屬標籤
     aiTempData.source = '📷 圖片辨識';
     aiTempData.mailUrl = '';
     
@@ -422,7 +422,6 @@ window.renderOrderList = debounce(function() {
             if (diffDays < 0) deadlineHtml = `<span class="badge bg-danger ms-2">🔴 已逾期 (${o.deadline})</span>`; else if (diffDays === 0) deadlineHtml = `<span class="badge bg-danger ms-2">🔴 今日出貨 (${o.deadline})</span>`; else if (diffDays <= 3) deadlineHtml = `<span class="badge bg-warning text-dark ms-2">🟡 即將到期 (${o.deadline})</span>`; else deadlineHtml = `<span class="badge bg-success ms-2">🟢 期限: ${o.deadline}</span>`;
         }
 
-        // 【修改】為訂單產生專屬來源標籤與信件查閱按鈕
         const sourceStr = o.source || '⌨️ 手動建檔';
         let sourceBadge = '';
         if (sourceStr.includes('信件')) sourceBadge = `<span class="badge bg-primary ms-2">${sourceStr}</span>`;
@@ -452,7 +451,7 @@ window.renderOrderList = debounce(function() {
 }, 300);
 
 // ============================================================================
-// 手動訂單與發票拖曳渲染 (Data-Driven Rendering)
+// 手動訂單與發票拖曳渲染
 // ============================================================================
 function renderSingleOrderManualItem(item) {
     return `<div class="item-row p-3 mb-2 bg-light border shadow-sm draggable-row" id="${item.id}" draggable="true" ondragstart="handleDragStart(event, '${item.id}', 'order')" ondragover="handleDragOver(event)" ondrop="handleDrop(event, '${item.id}', 'order')" ondragenter="handleDragEnter(event)" ondragleave="handleDragLeave(event)">
@@ -539,7 +538,6 @@ function saveEditOrder() {
     }
     if (items.length === 0) return alert('請至少新增一項品項！');
     
-    // 【修改】智慧判斷來源，編輯時保留原有的來源與信件網址
     let src = '⌨️ 手動建檔'; 
     let mUrl = '';
     if(idx) { 
@@ -591,7 +589,7 @@ function groupFulfillOrders() {
 }
 
 // ============================================================================
-// 發票模組 (Drag & Drop + 尾差自動調節機制)
+// 發票模組
 // ============================================================================
 function goStep(s) { document.querySelectorAll('#sys-invoice .step-card').forEach(c=>c.style.display='none'); document.getElementById('invStep'+s).style.display='block'; document.getElementById('mainApp').scrollTo(0,0); }
 function selectClientForInvoice(name) { const c = globalClients.find(x => x.name === name); if(!c) return; document.getElementById('invClientInput').value = name; currentInvoiceData.clientName = name; currentInvoiceData.taxId = c.taxId; document.getElementById('invClientInfo').innerText = `✓ 綁定成功 (統編: ${c.taxId||'無'})`; document.getElementById('invClientInfo').style.display = 'block'; document.getElementById('btnNext1').style.display = 'block'; document.getElementById('invOrderNo').value = ''; selectedOrderCache = []; document.getElementById('invAiNotice').style.display = 'none'; }
@@ -741,7 +739,7 @@ function submitInvoiceOptimistic() {
 function resetInvoiceSystem() { document.getElementById('invDate').value = getTodayStr(); document.getElementById('invClientInput').value=''; document.getElementById('invOrderNo').value=''; document.getElementById('invPaperNo').value=''; document.getElementById('invItemsContainer').innerHTML=''; currentInvoiceData={clientName:'', taxId:'', items:[]}; selectedOrderCache=[]; goStep(1); }
 
 // ============================================================================
-// 庫存模組 (Debounced)
+// 庫存與異動模組 (含自動向廠商叫貨)
 // ============================================================================
 function triggerSyncAssetCodes() { showLoading("同步長固代號 / 資材碼中..."); callApi('syncAssetCodesToInventory', {}).then(res => { hideLoading(); if(res.success) { showToast(`✅ 同步完成！共更新了 ${res.count} 筆資料。`); refreshData(); } else { alert(res.msg); } }).catch(err => { hideLoading(); alert("同步失敗：" + err.message); }); }
 
@@ -762,54 +760,351 @@ window.renderInvLogs = debounce(function() {
     let arr = globalInvLogs; if(fIn || fOut) arr = arr.filter(l => (fIn && l.type.includes(fIn)) || (fOut && l.type.includes(fOut)));
     if(fStart) { const startT = new Date(fStart).setHours(0,0,0,0); arr = arr.filter(l => new Date(l.time).setHours(0,0,0,0) >= startT); }
     if(fEnd) { const endT = new Date(fEnd).setHours(23,59,59,999); arr = arr.filter(l => new Date(l.time).getTime() <= endT); }
-    if(fName) arr = arr.filter(l => l.name === fName); if(term) arr = arr.filter(l => l.name.toLowerCase().includes(term) || l.staff.toLowerCase().includes(term) || l.memo.toLowerCase().includes(term));
+    if(fName) arr = arr.filter(l => l.name === fName); if(term) arr = arr.filter(l => l.name.toLowerCase().includes(term) || l.staff.toLowerCase().includes(term) || l.memo.toLowerCase().includes(term) || String(l.invoiceNo).toLowerCase().includes(term) || String(l.orderNo).toLowerCase().includes(term));
     const c = document.getElementById('stkLogContainer'); if(arr.length === 0) return c.innerHTML = '<div class="text-center text-muted py-4">無符合條件的異動紀錄</div>';
+    
     c.innerHTML = arr.map(l => {
-        const d = new Date(l.time); const dateStr = isNaN(d.getTime()) ? '' : `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; const isAdd = l.qtyChange > 0;
-        return `<div class="p-3 bg-white border rounded mb-2 shadow-sm d-flex justify-content-between align-items-center"><div><div class="fw-bold text-dark">${l.name} <span class="badge ${isAdd?'bg-success':'bg-danger'}">${l.type}</span></div><div class="small text-muted mt-1">${dateStr} | ${l.staff}</div><div class="small text-secondary mt-1">${l.memo}</div></div><div class="text-end"><div class="fs-5 fw-bold ${isAdd?'text-success':'text-danger'}">${isAdd?'+':''}${l.qtyChange}</div><div class="small text-muted">結存: ${l.newQty}</div></div></div>`;
+        const d = new Date(l.time); const dateStr = isNaN(d.getTime()) ? '' : `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; 
+        const isAdd = l.qtyChange > 0;
+        let extInfo = [];
+        if (l.invoiceNo) extInfo.push(`發票: ${l.invoiceNo}`);
+        if (l.orderNo) extInfo.push(`單號: ${l.orderNo}`);
+        if (l.arrivalDate) extInfo.push(`進貨日: ${l.arrivalDate}`);
+        let extHtml = extInfo.length > 0 ? `<div class="small text-primary fw-bold mt-1">${extInfo.join(' | ')}</div>` : '';
+        
+        return `<div class="p-3 bg-white border rounded mb-2 shadow-sm d-flex justify-content-between align-items-center">
+            <div>
+                <div class="fw-bold text-dark">${l.name} <span class="badge ${isAdd?'bg-success':(l.qtyChange<0?'bg-danger':'bg-warning text-dark')}">${l.type}</span></div>
+                <div class="small text-muted mt-1">${dateStr} | ${l.staff}</div>
+                ${extHtml}
+                <div class="small text-secondary mt-1">${l.memo}</div>
+            </div>
+            <div class="text-end">
+                <div class="fs-5 fw-bold ${isAdd?'text-success':(l.qtyChange<0?'text-danger':'text-warning')}">${isAdd?'+':''}${l.qtyChange}</div>
+                <div class="small text-muted mb-2">結存: ${l.newQty}</div>
+                <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openEditInvLogModal(${l.rowIdx})">✏️ 編輯</button>
+            </div>
+        </div>`;
     }).join('');
 }, 300);
 
+// 【擴充】庫存異動紀錄編輯器
+function openEditInvLogModal(idx) {
+    const l = globalInvLogs.find(x => x.rowIdx === idx); if(!l) return;
+    document.getElementById('e_logRowIdx').value = idx;
+    document.getElementById('e_logInvoiceNo').value = l.invoiceNo || '';
+    document.getElementById('e_logArrivalDate').value = l.arrivalDate || '';
+    document.getElementById('e_logOrderNo').value = l.orderNo || '';
+    document.getElementById('e_logMemo').value = l.memo || '';
+    document.getElementById('e_logSnapshot').value = l.snapshot || '';
+    
+    if (l.type === "向廠商訂貨" && l.snapshot) {
+        document.getElementById('btnReprintPo').style.display = 'block';
+    } else {
+        document.getElementById('btnReprintPo').style.display = 'none';
+    }
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('editInvLogModal')).show();
+}
+
+function saveEditInvLog() {
+    const idx = parseInt(document.getElementById('e_logRowIdx').value);
+    const invoiceNo = document.getElementById('e_logInvoiceNo').value.trim();
+    const arrivalDate = document.getElementById('e_logArrivalDate').value;
+    const orderNo = document.getElementById('e_logOrderNo').value.trim();
+    const memo = document.getElementById('e_logMemo').value.trim();
+    
+    const l = globalInvLogs.find(x => x.rowIdx === idx);
+    if(l) {
+        l.invoiceNo = invoiceNo; l.arrivalDate = arrivalDate; l.orderNo = orderNo; l.memo = memo;
+    }
+    
+    pushToSyncQueue('editInvLogRecord', { rowIdx: idx, invoiceNo, arrivalDate, orderNo, memo }, null);
+    window.renderInvLogs();
+    bootstrap.Modal.getInstance(document.getElementById('editInvLogModal')).hide();
+    showToast("💾 異動紀錄已更新");
+}
+
 function openAdjustModal(nameStr) {
+    document.getElementById('adjInvoiceNo').value = ''; 
+    document.getElementById('adjArrivalDate').value = getTodayStr(); 
+    
     if(nameStr) { const v = globalInventory.find(x => x.name === nameStr); document.getElementById('adjRowIdx').value = v.rowIdx; document.getElementById('adjName').value = v.name; document.getElementById('adjName').onclick = null; document.getElementById('adjName').classList.remove('fake-input-btn'); document.getElementById('adjInternalCode').value = v.internalCode || ''; document.getElementById('adjAlert').value = v.alertQty; document.getElementById('adjCost').value = v.cost; document.getElementById('adjSup').value = v.supplier; } 
     else { document.getElementById('adjRowIdx').value = ''; document.getElementById('adjName').value = ''; document.getElementById('adjName').onclick = () => openSearchModal('item_adj', selectProductForAdj); document.getElementById('adjName').classList.add('fake-input-btn'); document.getElementById('adjInternalCode').value = ''; document.getElementById('adjAlert').value = '10'; document.getElementById('adjCost').value = '0'; document.getElementById('adjSup').value = ''; }
     document.getElementById('adjQty').value = ''; document.getElementById('adjLot').value = ''; document.getElementById('adjExp').value = ''; document.getElementById('adjMemo').value = ''; bootstrap.Modal.getOrCreateInstance(document.getElementById('adjInvModal')).show();
 }
-function selectProductForAdj(val) { document.getElementById('adjName').value = val; const p = globalCatalog.find(x => x.productName === val); if(p) document.getElementById('adjInternalCode').value = p.internalCode || p.assetCode || ''; }
+
+function selectProductForAdj(val) { 
+    document.getElementById('adjName').value = val; const p = globalCatalog.find(x => x.productName === val); 
+    if(p) {
+        let intCode = p.internalCode || p.assetCode || '';
+        document.getElementById('adjInternalCode').value = intCode;
+        
+        // 嘗試自動抓供應商
+        if (intCode) {
+            const parts = intCode.split('-');
+            if (parts.length > 1) {
+                const supCodeMatch = parts[1];
+                const s = globalSuppliers.find(x => x.code === supCodeMatch);
+                if (s) document.getElementById('adjSup').value = s.name;
+            }
+        }
+    } 
+}
+
 function saveInventoryAdjust() {
     const idx = document.getElementById('adjRowIdx').value; const name = document.getElementById('adjName').value.trim(); const internalCode = document.getElementById('adjInternalCode').value.trim(); const changeQty = parseFloat(document.getElementById('adjQty').value); const alertQty = parseFloat(document.getElementById('adjAlert').value) || 0; const cost = parseFloat(document.getElementById('adjCost').value) || 0; const sup = document.getElementById('adjSup').value.trim(); const lot = document.getElementById('adjLot').value.trim(); const exp = document.getElementById('adjExp').value; const type = document.getElementById('adjType').value; const memo = document.getElementById('adjMemo').value.trim();
+    const invoiceNo = document.getElementById('adjInvoiceNo').value.trim(); const arrivalDate = document.getElementById('adjArrivalDate').value;
+    
     if(!name || isNaN(changeQty) || changeQty === 0) return alert("請選定品名並輸入非零異動數量");
-    const payload = { name: name, internalCode: internalCode, changeQty: changeQty, alertQty: alertQty, cost: cost, supplier: sup, lot: lot, expiry: exp, type: type, memo: memo, staff: myName };
+    const payload = { name: name, internalCode: internalCode, changeQty: changeQty, alertQty: alertQty, cost: cost, supplier: sup, lot: lot, expiry: exp, type: type, memo: memo, invoiceNo: invoiceNo, arrivalDate: arrivalDate, staff: myName };
     if(idx) { const v = globalInventory.find(x => x.rowIdx === parseInt(idx)); if(v) { v.qty += changeQty; v.alertQty = alertQty; v.cost = cost; v.supplier = sup; if(lot) v.lot=lot; if(exp) v.expiry=exp; if(internalCode) v.internalCode=internalCode; } } 
     else { globalInventory.push({rowIdx: Date.now(), name: name, internalCode: internalCode, qty: changeQty, alertQty: alertQty, cost: cost, supplier: sup, lot: lot, expiry: exp}); }
-    globalInvLogs.unshift({time: Date.now(), staff: myName, name: name, type: type, qtyChange: changeQty, newQty: idx ? globalInventory.find(x => x.rowIdx === parseInt(idx)).qty : changeQty, memo: memo});
+    globalInvLogs.unshift({time: Date.now(), staff: myName, name: name, type: type, qtyChange: changeQty, newQty: idx ? globalInventory.find(x => x.rowIdx === parseInt(idx)).qty : changeQty, invoiceNo: invoiceNo, arrivalDate: arrivalDate, memo: memo});
     populateLogDropdowns(); window.renderInventory(); window.renderInvLogs(); bootstrap.Modal.getInstance(document.getElementById('adjInvModal')).hide(); pushToSyncQueue('adjustInventory', payload, null);
 }
+
+// 【擴充】欠貨出貨 / 訂貨模組
 function renderShipments() {
     const c = document.getElementById('stkShipContainer'); const pending = globalSalesDetails.filter(s => s.shipStatus !== '已結案' && s.shipStatus !== '作廢');
     if(pending.length === 0) return c.innerHTML = '<div class="text-center text-muted py-4">✅ 所有已開立發票之品項皆已全數出貨完畢</div>';
     c.innerHTML = pending.map(s => {
         let remain = s.qty - s.shippedQty;
-        return `<div class="item-row bg-white shadow-sm mb-2"><div class="d-flex justify-content-between mb-2"><div><div class="fw-bold text-dark fs-6">${s.name}</div><div class="small text-muted mt-1">${s.client} | 發票: ${s.paperNo}</div></div><button class="btn btn-sm btn-primary fw-bold" onclick="openShipModal(${s.rowIdx})">出貨</button></div><div class="d-flex gap-3 small"><span class="text-secondary">總訂購: ${s.qty}</span><span class="text-success">已出: ${s.shippedQty}</span><span class="text-danger fw-bold">欠貨: ${remain}</span></div></div>`;
+        return `<div class="item-row bg-white shadow-sm mb-2">
+            <div class="d-flex justify-content-between mb-2">
+                <div><div class="fw-bold text-dark fs-6">${s.name}</div><div class="small text-muted mt-1">${s.client} | 發票: ${s.paperNo}</div></div>
+                <div>
+                    <button class="btn btn-sm btn-outline-warning text-dark fw-bold me-1" onclick="openPurchaseOrderModal(${s.rowIdx})">🛒 訂貨</button>
+                    <button class="btn btn-sm btn-primary fw-bold" onclick="openShipModal(${s.rowIdx})">📦 出貨</button>
+                </div>
+            </div>
+            <div class="d-flex gap-3 small"><span class="text-secondary">總訂購: ${s.qty}</span><span class="text-success">已出: ${s.shippedQty}</span><span class="text-danger fw-bold">欠貨: ${remain}</span></div>
+        </div>`;
     }).join('');
 }
+
 function openShipModal(rowIdx) {
     const s = globalSalesDetails.find(x => x.rowIdx === rowIdx); if(!s) return;
     document.getElementById('shipRowIdx').value = rowIdx; document.getElementById('shipItemName').innerText = s.name; document.getElementById('shipTotalQty').innerText = s.qty; document.getElementById('shipDoneQty').innerText = s.shippedQty;
     const remain = s.qty - s.shippedQty; document.getElementById('shipRemainQty').innerText = remain; document.getElementById('shipNowQty').value = remain; document.getElementById('shipNowQty').max = remain;
     bootstrap.Modal.getOrCreateInstance(document.getElementById('shipModal')).show();
 }
+
 function confirmShipment() {
     const rowIdx = parseInt(document.getElementById('shipRowIdx').value); const qty = parseFloat(document.getElementById('shipNowQty').value);
     if(isNaN(qty) || qty <= 0) return alert("數量錯誤"); const s = globalSalesDetails.find(x => x.rowIdx === rowIdx); if(!s) return; if(qty > (s.qty - s.shippedQty)) return alert("出貨量不可大於欠貨量");
     s.shippedQty += qty; if(s.shippedQty >= s.qty) s.shipStatus = '已結案'; else s.shipStatus = '部分出貨';
     let inv = globalInventory.find(x => x.name === s.name); if (inv) inv.qty -= qty; else globalInventory.push({rowIdx:0, name: s.name, qty: -qty, alertQty: 0, cost: 0, supplier: '', internalCode: '', lot: '', expiry: ''});
-    let currentInvQty = inv ? inv.qty : -qty; globalInvLogs.unshift({ time: Date.now(), staff: myName, name: s.name, type: '分批出貨', qtyChange: -qty, newQty: currentInvQty, memo: `單號: ${s.paperNo}` });
+    let currentInvQty = inv ? inv.qty : -qty; globalInvLogs.unshift({ time: Date.now(), staff: myName, name: s.name, type: '分批出貨', qtyChange: -qty, newQty: currentInvQty, orderNo: s.paperNo, memo: `單號: ${s.paperNo}` });
     populateLogDropdowns(); window.renderInvLogs(); window.renderInventory(); renderShipments(); bootstrap.Modal.getInstance(document.getElementById('shipModal')).hide(); pushToSyncQueue('updateShipment', {updates: [{rowIdx: rowIdx, paperNo: s.paperNo, name: s.name, shipQty: qty, totalQty: s.qty}], staff: myName}, null); showToast("🚚 出貨與庫存扣抵完成");
 }
 
 // ============================================================================
-// 報表與列印模組 (Debounced)
+// 【全新】向廠商訂貨 (採購單) 模組
+// ============================================================================
+function openPurchaseOrderModal(salesRowIdx) {
+    const s = globalSalesDetails.find(x => x.rowIdx === salesRowIdx); if(!s) return;
+    
+    // 初始化清空
+    document.getElementById('poDate').value = getTodayStr();
+    document.getElementById('poOrderNo').value = '';
+    document.getElementById('poSupplier').value = '';
+    document.getElementById('poSupPhone').value = '';
+    document.getElementById('poSupFax').value = '';
+    
+    // 填寫基本對應
+    document.getElementById('poItemName').value = s.name;
+    document.getElementById('poClientName').value = s.client;
+    
+    const remainQty = s.qty - s.shippedQty;
+    document.getElementById('poQty').value = remainQty;
+    document.getElementById('poMemo').value = `發票號碼: ${s.paperNo}`;
+
+    // 尋找長固代號與價格
+    const p = globalCatalog.find(x => x.clientName === s.client && x.productName === s.name);
+    let intCode = '';
+    if (p) {
+        intCode = p.internalCode || p.assetCode || '';
+        document.getElementById('poInternalCode').value = intCode;
+        
+        let inv = globalInventory.find(x => x.name === s.name);
+        document.getElementById('poUnitPrice').value = inv ? (inv.cost || 0) : 0; // 預設帶入庫存成本價，若無則顯示 0
+
+        // 智慧比對供應商
+        if (intCode) {
+            const parts = intCode.split('-');
+            if (parts.length > 1) {
+                const supCodeMatch = parts[1];
+                const supplier = globalSuppliers.find(x => x.code === supCodeMatch);
+                if (supplier) {
+                    document.getElementById('poSupplier').value = supplier.name || '';
+                    document.getElementById('poSupPhone').value = supplier.phone || '';
+                    document.getElementById('poSupFax').value = supplier.fax || '';
+                }
+            }
+        }
+    }
+
+    // 尋找客戶地址與收貨單位
+    const cObj = globalClients.find(x => x.name === s.client);
+    document.getElementById('poAddress').value = cObj ? (cObj.address || '') : '';
+    
+    const deptSelect = document.getElementById('poReceiveDept');
+    deptSelect.innerHTML = '';
+    if (cObj && cObj.receiveDept) {
+        const depts = cObj.receiveDept.split(/[,，\n]+/).map(str => str.trim()).filter(x => x);
+        if (depts.length > 0) {
+            deptSelect.innerHTML = depts.map(d => `<option value="${d}">${d}</option>`).join('');
+        } else {
+            deptSelect.innerHTML = `<option value="">無資料</option>`;
+        }
+    } else {
+        deptSelect.innerHTML = `<option value="">無資料</option>`;
+    }
+
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('purchaseOrderModal')).show();
+}
+
+function confirmPurchaseOrder() {
+    const qty = parseFloat(document.getElementById('poQty').value);
+    if (isNaN(qty) || qty <= 0) return alert("請輸入正確的訂貨數量！");
+    
+    // 收集畫面上的所有資料打包成快照
+    const snapData = {
+        poDate: document.getElementById('poDate').value,
+        poOrderNo: document.getElementById('poOrderNo').value,
+        poSupplier: document.getElementById('poSupplier').value,
+        poSupPhone: document.getElementById('poSupPhone').value,
+        poSupFax: document.getElementById('poSupFax').value,
+        poItemName: document.getElementById('poItemName').value,
+        poInternalCode: document.getElementById('poInternalCode').value,
+        poUnitPrice: document.getElementById('poUnitPrice').value,
+        poClientName: document.getElementById('poClientName').value,
+        poReceiveDept: document.getElementById('poReceiveDept').value,
+        poAddress: document.getElementById('poAddress').value,
+        poQty: qty,
+        poMemo: document.getElementById('poMemo').value
+    };
+
+    const payload = {
+        name: snapData.poItemName,
+        staff: myName,
+        orderNo: snapData.poOrderNo,
+        orderDate: snapData.poDate,
+        memo: snapData.poMemo,
+        snapshot: JSON.stringify(snapData) // 整包資料轉 JSON 字串存到 M 欄
+    };
+
+    // 樂觀更新前端異動紀錄 (不更新庫存數量)
+    let inv = globalInventory.find(x => x.name === snapData.poItemName);
+    let currentQty = inv ? inv.qty : 0;
+    globalInvLogs.unshift({
+        rowIdx: Date.now(), // 暫時給定
+        time: Date.now(), 
+        staff: myName, 
+        name: snapData.poItemName, 
+        type: '向廠商訂貨', 
+        qtyChange: 0, 
+        newQty: currentQty, 
+        orderNo: snapData.poOrderNo,
+        arrivalDate: snapData.poDate, 
+        memo: snapData.poMemo,
+        snapshot: payload.snapshot
+    });
+
+    pushToSyncQueue('submitPurchaseOrder', payload, null);
+    window.renderInvLogs();
+    bootstrap.Modal.getInstance(document.getElementById('purchaseOrderModal')).hide();
+    
+    showToast("🛒 訂貨單已記錄！即將列印...");
+    setTimeout(() => {
+        printPurchaseOrder(snapData);
+    }, 500);
+}
+
+function reprintPurchaseOrder() {
+    const snapStr = document.getElementById('e_logSnapshot').value;
+    if (!snapStr) return alert("此紀錄無訂貨單快照可列印！");
+    try {
+        const snapData = JSON.parse(snapStr);
+        bootstrap.Modal.getInstance(document.getElementById('editInvLogModal')).hide();
+        printPurchaseOrder(snapData);
+    } catch(e) {
+        alert("快照資料解析失敗");
+    }
+}
+
+function printPurchaseOrder(data) {
+    const totalAmount = parseFloat(data.poQty) * parseFloat(data.poUnitPrice || 0);
+    const dateStr = data.poDate ? data.poDate.replace(/-/g, '/') : getTodayStr().replace(/-/g, '/');
+
+    const html = `
+        <div style="padding: 0; width: 100%; box-sizing: border-box;">
+            <div style="text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 5px; margin-bottom: 5px;">長固實業有限公司 - 訂貨單</div>
+            
+            <table style="width: 100%; border: none; margin-bottom: 15px; font-size: 14px;">
+                <tr>
+                    <td style="width: 50%; vertical-align: top;">
+                        <div style="font-weight: bold; font-size: 16px;">TO: ${escapeQuotes(data.poSupplier)}</div>
+                        <div style="margin-top: 5px;">電話: ${escapeQuotes(data.poSupPhone)}</div>
+                        <div>傳真: ${escapeQuotes(data.poSupFax)}</div>
+                        <div style="margin-top: 5px; color: #555;">客戶: ${escapeQuotes(data.poClientName)}</div>
+                    </td>
+                    <td style="width: 50%; vertical-align: top; text-align: right; line-height: 1.6;">
+                        <div style="font-weight: bold;">訂貨日期: ${dateStr}</div>
+                        <div style="font-weight: bold; color: #d32f2f;">訂單號碼: ${escapeQuotes(data.poOrderNo || '無')}</div>
+                        <div style="margin-top: 5px;">統一編號: 86477073</div>
+                        <div>電話: (04)23269591 &nbsp; FAX: (04)23268576</div>
+                        <div>發票地址: 新北市三重區重新路5段609巷6號4樓</div>
+                    </td>
+                </tr>
+            </table>
+
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 15px;">
+                <thead>
+                    <tr style="background-color: #f8f9fa;">
+                        <th style="border: 2px solid #333; padding: 10px; text-align: left;">長固代號 / 品名</th>
+                        <th style="border: 2px solid #333; padding: 10px; width: 80px; text-align: center;">數量</th>
+                        <th style="border: 2px solid #333; padding: 10px; width: 100px; text-align: right;">單價</th>
+                        <th style="border: 2px solid #333; padding: 10px; width: 120px; text-align: right;">總計</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="border: 1px solid #333; padding: 15px 10px; text-align: left;">
+                            <div style="font-weight: bold; color: #0d6efd; margin-bottom: 5px;">${escapeQuotes(data.poInternalCode)}</div>
+                            <div>${escapeQuotes(data.poItemName)}</div>
+                        </td>
+                        <td style="border: 1px solid #333; padding: 15px 10px; text-align: center; font-size: 18px; font-weight: bold;">${data.poQty}</td>
+                        <td style="border: 1px solid #333; padding: 15px 10px; text-align: right;">${Number(data.poUnitPrice).toLocaleString()}</td>
+                        <td style="border: 1px solid #333; padding: 15px 10px; text-align: right; font-weight: bold;">${totalAmount.toLocaleString()}</td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <div style="margin-top: 15px; font-size: 14px; border: 1px solid #aaa; padding: 10px; background-color: #fcfcfc;">
+                <div style="margin-bottom: 5px;"><strong style="color: #d32f2f;">📍 送貨地點：</strong>${escapeQuotes(data.poAddress)}</div>
+                <div style="margin-bottom: 5px;"><strong>📦 收貨單位：</strong>${escapeQuotes(data.poReceiveDept)}</div>
+                <div><strong>📝 備註事項：</strong>${escapeQuotes(data.poMemo)}</div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; margin-top: 40px; font-size: 16px; padding: 0 20px;">
+                <div style="width: 40%;">主管簽核: <span style="border-bottom: 1px solid #000; display: inline-block; width: 70%;">&nbsp;</span></div>
+                <div style="width: 40%;">經辦人: <span style="border-bottom: 1px solid #000; display: inline-block; width: 75%;">&nbsp;${myName}</span></div>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('printPoArea').innerHTML = html;
+    
+    // 切換列印模式
+    document.getElementById('printPoArea').classList.add('print-active');
+    document.getElementById('printArea').classList.remove('print-active');
+    
+    setTimeout(() => { window.print(); }, 300);
+}
+
+// ============================================================================
+// 報表與發票出貨單列印模組
 // ============================================================================
 window.renderHistory = debounce(function() {
     const fStaff = document.getElementById('histFilterStaff').value; const fClient = document.getElementById('histFilterClient').value; const fDate = document.getElementById('histFilterDate').value; const fStatus = document.getElementById('histFilterStatus').value; const term = document.getElementById('histSearch').value.toLowerCase();
@@ -920,6 +1215,11 @@ function printDeliveryNote(idx) {
     `;
 
     document.getElementById('printArea').innerHTML = html;
+    
+    // 切換列印模式
+    document.getElementById('printArea').classList.add('print-active');
+    document.getElementById('printPoArea').classList.remove('print-active');
+    
     setTimeout(() => { window.print(); }, 300);
 }
 
@@ -962,7 +1262,7 @@ function exportReportToEmail() {
 }
 
 // ============================================================================
-// 通用搜尋與管理員模組 (Debounced)
+// 通用搜尋與管理員模組
 // ============================================================================
 function openSearchModal(type, callback) {
     currentSearchCallback = callback; document.getElementById('searchModalList').innerHTML = ''; document.getElementById('searchModalInput').value = '';
@@ -987,10 +1287,16 @@ window.renderAdminClients = debounce(function() {
     document.getElementById('admClientList').innerHTML = globalClients.filter(c => c.name.toLowerCase().includes(term) || String(c.taxId).includes(term)).map(c => `<div class="item-row bg-white d-flex justify-content-between align-items-center shadow-sm"><div><div class="fw-bold text-dark fs-6">${c.name}</div><div class="small text-muted mt-1">統編: ${c.taxId||'無'}</div></div><button class="btn btn-outline-danger btn-sm fw-bold px-3" onclick="openEditClientModal('${escapeQuotes(c.name)}', '${escapeQuotes(c.taxId)}')">📝 編輯</button></div>`).join(''); 
 }, 300);
 
-function openNewClientModal() { document.getElementById('addClientName').value = ''; document.getElementById('addClientTaxId').value = ''; bootstrap.Modal.getOrCreateInstance(document.getElementById('addClientModal')).show(); }
-function submitNewClientOptimistic() { const name = document.getElementById('addClientName').value.trim(); const taxId = document.getElementById('addClientTaxId').value.trim(); if(!name) return alert('名稱必填'); globalClients.push({ name, taxId }); populateAdminClientFilter(); window.renderAdminClients(); bootstrap.Modal.getInstance(document.getElementById('addClientModal')).hide(); pushToSyncQueue('addClientData', {clientName: name, taxId}, null); }
-function openEditClientModal(name, taxId) { document.getElementById('editClientOldName').value = name; document.getElementById('editClientName').value = name; document.getElementById('editClientTaxId').value = taxId; bootstrap.Modal.getOrCreateInstance(document.getElementById('editClientModal')).show(); }
-function submitEditClientOptimistic() { const old = document.getElementById('editClientOldName').value; const name = document.getElementById('editClientName').value.trim(); const tax = document.getElementById('editClientTaxId').value.trim(); if(!name) return; const c = globalClients.find(x => x.name === old); if(c) { c.name = name; c.taxId = tax; } globalCatalog.forEach(p => { if(p.clientName === old) p.clientName = name; }); populateAdminClientFilter(); window.renderAdminClients(); window.renderAdminItems(); bootstrap.Modal.getInstance(document.getElementById('editClientModal')).hide(); pushToSyncQueue('updateClientData', {oldName: old, newName: name, newTaxId: tax}, null); }
+function openNewClientModal() { document.getElementById('addClientName').value = ''; document.getElementById('addClientTaxId').value = ''; document.getElementById('addClientAddress').value = ''; document.getElementById('addClientReceiveDept').value = ''; bootstrap.Modal.getOrCreateInstance(document.getElementById('addClientModal')).show(); }
+function submitNewClientOptimistic() { const name = document.getElementById('addClientName').value.trim(); const taxId = document.getElementById('addClientTaxId').value.trim(); const address = document.getElementById('addClientAddress').value.trim(); const receiveDept = document.getElementById('addClientReceiveDept').value.trim(); if(!name) return alert('名稱必填'); globalClients.push({ name, taxId, address, receiveDept }); populateAdminClientFilter(); window.renderAdminClients(); bootstrap.Modal.getInstance(document.getElementById('addClientModal')).hide(); pushToSyncQueue('addClientData', {clientName: name, taxId, address, receiveDept}, null); }
+function openEditClientModal(name, taxId) { 
+    const c = globalClients.find(x => x.name === name);
+    document.getElementById('editClientOldName').value = name; document.getElementById('editClientName').value = name; document.getElementById('editClientTaxId').value = taxId; 
+    document.getElementById('editClientAddress').value = c ? (c.address || '') : '';
+    document.getElementById('editClientReceiveDept').value = c ? (c.receiveDept || '') : '';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('editClientModal')).show(); 
+}
+function submitEditClientOptimistic() { const old = document.getElementById('editClientOldName').value; const name = document.getElementById('editClientName').value.trim(); const tax = document.getElementById('editClientTaxId').value.trim(); const address = document.getElementById('editClientAddress').value.trim(); const receiveDept = document.getElementById('editClientReceiveDept').value.trim(); if(!name) return; const c = globalClients.find(x => x.name === old); if(c) { c.name = name; c.taxId = tax; c.address = address; c.receiveDept = receiveDept; } globalCatalog.forEach(p => { if(p.clientName === old) p.clientName = name; }); populateAdminClientFilter(); window.renderAdminClients(); window.renderAdminItems(); bootstrap.Modal.getInstance(document.getElementById('editClientModal')).hide(); pushToSyncQueue('updateClientData', {oldName: old, newName: name, newTaxId: tax, address, receiveDept}, null); }
 
 window.renderAdminItems = debounce(function() { 
     const f = document.getElementById('admItemFilterSelect').value; const t = document.getElementById('admItemSearch').value.toLowerCase(); let arr = globalCatalog; if(f) arr = arr.filter(p => p.clientName === f); if(t) arr = arr.filter(p => p.productName.toLowerCase().includes(t) || p.clientName.toLowerCase().includes(t)); document.getElementById('admItemList').innerHTML = arr.length ? arr.map(p => `<div class="item-row bg-white d-flex justify-content-between align-items-center shadow-sm"><div><div class="fw-bold text-dark fs-6 mb-2">${p.productName} <span class="badge bg-secondary ms-1">${p.internalCode||''}</span></div><div class="d-flex align-items-center"><span class="badge bg-light text-dark border me-2 align-self-center">${p.clientName}</span><div class="bg-success text-white px-2 py-1 rounded shadow-sm d-inline-block"><span class="fw-bold">NT$ ${p.price}</span></div><span class="text-muted small fw-bold ms-1">/ ${p.unit}</span></div></div><button class="btn btn-outline-primary btn-sm fw-bold px-3 ms-2" onclick="openAdminItemModal(${p.rowIndex})">📝</button></div>`).join('') : '<div class="text-center text-muted py-4">查無對應品項</div>'; 
