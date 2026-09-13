@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 長固 ERP 系統 - 前端核心運算邏輯 (測試環境優化版 + 訂購單擴充)
+ * 長固 ERP 系統 - 前端核心運算邏輯 (測試環境優化版 + 訂購單完美擴充)
  * ============================================================================
  */
 
@@ -15,7 +15,7 @@ let myUid = localStorage.getItem('invUid') || Math.random().toString(36).substri
 localStorage.setItem('invUid', myUid);
 
 let globalClients = []; 
-let globalSuppliers = []; // 【擴充】儲存供應商資料
+let globalSuppliers = []; 
 let globalCatalog = []; 
 let globalHistory = []; 
 let globalOrders = []; 
@@ -24,10 +24,8 @@ let globalSalesDetails = [];
 let globalInvLogs = []; 
 let emailSettingsData = { list: [], selected: [] };
 
-// 髒讀防護：紀錄前端取得資料時的最後更新時間
 let myLastSyncTime = 0;
 
-// AI 暫存與目前狀態
 let aiTempData = null; 
 let currentOrderManualItems = []; 
 let selectedOrderCache = []; 
@@ -57,7 +55,7 @@ async function callApi(action, payload = {}) {
 }
 
 // ============================================================================
-// 背景同步佇列系統 (LocalStorage 容錯 + 默默更新機制)
+// 背景同步佇列系統
 // ============================================================================
 let bgSyncQueue = []; 
 let isSyncing = false; 
@@ -178,7 +176,7 @@ function silentRefreshData() {
 }
 
 // ============================================================================
-// 基礎工具、UI 函式與 Debounce 防抖
+// 基礎工具與 UI 函式
 // ============================================================================
 function getTodayStr() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function setSafeText(elementId, textValue) { const el = document.getElementById(elementId); if (el) el.innerText = textValue; }
@@ -772,6 +770,12 @@ window.renderInvLogs = debounce(function() {
         if (l.arrivalDate) extInfo.push(`進貨日: ${l.arrivalDate}`);
         let extHtml = extInfo.length > 0 ? `<div class="small text-primary fw-bold mt-1">${extInfo.join(' | ')}</div>` : '';
         
+        // 【優化】動態產生操作按鈕 (外顯列印按鈕)
+        let actionBtns = `<button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openEditInvLogModal(${l.rowIdx})">✏️ 編輯</button>`;
+        if (l.type === "向廠商訂貨" && l.snapshot) {
+            actionBtns = `<button class="btn btn-sm btn-outline-info fw-bold me-1 text-dark" onclick="reprintPurchaseOrderFast(${l.rowIdx})">🖨️ 列印</button>` + actionBtns;
+        }
+
         return `<div class="p-3 bg-white border rounded mb-2 shadow-sm d-flex justify-content-between align-items-center">
             <div>
                 <div class="fw-bold text-dark">${l.name} <span class="badge ${isAdd?'bg-success':(l.qtyChange<0?'bg-danger':'bg-warning text-dark')}">${l.type}</span></div>
@@ -782,7 +786,7 @@ window.renderInvLogs = debounce(function() {
             <div class="text-end">
                 <div class="fs-5 fw-bold ${isAdd?'text-success':(l.qtyChange<0?'text-danger':'text-warning')}">${isAdd?'+':''}${l.qtyChange}</div>
                 <div class="small text-muted mb-2">結存: ${l.newQty}</div>
-                <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openEditInvLogModal(${l.rowIdx})">✏️ 編輯</button>
+                <div>${actionBtns}</div>
             </div>
         </div>`;
     }).join('');
@@ -798,11 +802,6 @@ function openEditInvLogModal(idx) {
     document.getElementById('e_logMemo').value = l.memo || '';
     document.getElementById('e_logSnapshot').value = l.snapshot || '';
     
-    if (l.type === "向廠商訂貨" && l.snapshot) {
-        document.getElementById('btnReprintPo').style.display = 'block';
-    } else {
-        document.getElementById('btnReprintPo').style.display = 'none';
-    }
     bootstrap.Modal.getOrCreateInstance(document.getElementById('editInvLogModal')).show();
 }
 
@@ -906,18 +905,19 @@ function openPurchaseOrderModal(salesRowIdx) {
     
     // 初始化清空
     document.getElementById('poDate').value = getTodayStr();
-    document.getElementById('poOrderNo').value = '';
     document.getElementById('poSupplier').value = '';
     document.getElementById('poSupPhone').value = '';
     document.getElementById('poSupFax').value = '';
+    document.getElementById('poMemo').value = '';
     
     // 填寫基本對應
     document.getElementById('poItemName').value = s.name;
     document.getElementById('poClientName').value = s.client;
+    // 【優化】自動帶入後台原始訂單編號
+    document.getElementById('poOrderNo').value = s.orderNo || '';
     
     const remainQty = s.qty - s.shippedQty;
     document.getElementById('poQty').value = remainQty;
-    document.getElementById('poMemo').value = `發票號碼: ${s.paperNo}`;
 
     // 尋找長固代號與價格
     const p = globalCatalog.find(x => x.clientName === s.client && x.productName === s.name);
@@ -927,7 +927,7 @@ function openPurchaseOrderModal(salesRowIdx) {
         document.getElementById('poInternalCode').value = intCode;
         
         let inv = globalInventory.find(x => x.name === s.name);
-        document.getElementById('poUnitPrice').value = inv ? (inv.cost || 0) : 0; // 預設帶入庫存成本價，若無則顯示 0
+        document.getElementById('poUnitPrice').value = inv ? (inv.cost || 0) : 0;
 
         // 智慧比對供應商
         if (intCode) {
@@ -994,11 +994,11 @@ function confirmPurchaseOrder() {
         snapshot: JSON.stringify(snapData) // 整包資料轉 JSON 字串存到 M 欄
     };
 
-    // 樂觀更新前端異動紀錄 (不更新庫存數量)
+    // 樂觀更新前端異動紀錄
     let inv = globalInventory.find(x => x.name === snapData.poItemName);
     let currentQty = inv ? inv.qty : 0;
     globalInvLogs.unshift({
-        rowIdx: Date.now(), // 暫時給定
+        rowIdx: Date.now(), 
         time: Date.now(), 
         staff: myName, 
         name: snapData.poItemName, 
@@ -1021,12 +1021,12 @@ function confirmPurchaseOrder() {
     }, 500);
 }
 
-function reprintPurchaseOrder() {
-    const snapStr = document.getElementById('e_logSnapshot').value;
-    if (!snapStr) return alert("此紀錄無訂貨單快照可列印！");
+// 【優化】直接從異動清單一鍵列印
+window.reprintPurchaseOrderFast = function(idx) {
+    const l = globalInvLogs.find(x => x.rowIdx === idx);
+    if (!l || !l.snapshot) return alert("無快照可列印！");
     try {
-        const snapData = JSON.parse(snapStr);
-        bootstrap.Modal.getInstance(document.getElementById('editInvLogModal')).hide();
+        const snapData = JSON.parse(l.snapshot);
         printPurchaseOrder(snapData);
     } catch(e) {
         alert("快照資料解析失敗");
@@ -1037,59 +1037,56 @@ function printPurchaseOrder(data) {
     const totalAmount = parseFloat(data.poQty) * parseFloat(data.poUnitPrice || 0);
     const dateStr = data.poDate ? data.poDate.replace(/-/g, '/') : getTodayStr().replace(/-/g, '/');
 
+    // 【優化】A5橫式專屬排版設計，字體加深加粗、移除簽章
     const html = `
-        <div style="padding: 0; width: 100%; box-sizing: border-box;">
-            <div style="text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 5px; margin-bottom: 5px;">長固實業有限公司 - 訂貨單</div>
+        <div style="padding: 0; width: 100%; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif;">
+            <div style="text-align: center; font-size: 26px; font-weight: 900; letter-spacing: 5px; margin-bottom: 10px; color: #000;">長固實業有限公司 - 訂貨單</div>
             
-            <table style="width: 100%; border: none; margin-bottom: 15px; font-size: 14px;">
+            <table style="width: 100%; border: none; margin-bottom: 15px; font-size: 14px; color: #000;">
                 <tr>
                     <td style="width: 50%; vertical-align: top;">
                         <div style="font-weight: bold; font-size: 16px;">TO: ${escapeQuotes(data.poSupplier)}</div>
                         <div style="margin-top: 5px;">電話: ${escapeQuotes(data.poSupPhone)}</div>
                         <div>傳真: ${escapeQuotes(data.poSupFax)}</div>
-                        <div style="margin-top: 5px; color: #555;">客戶: ${escapeQuotes(data.poClientName)}</div>
+                        <div style="margin-top: 10px; color: #000; font-size: 18px; font-weight: bold;">客戶: ${escapeQuotes(data.poClientName)}</div>
                     </td>
                     <td style="width: 50%; vertical-align: top; text-align: right; line-height: 1.6;">
                         <div style="font-weight: bold;">訂貨日期: ${dateStr}</div>
                         <div style="font-weight: bold; color: #d32f2f;">訂單號碼: ${escapeQuotes(data.poOrderNo || '無')}</div>
                         <div style="margin-top: 5px;">統一編號: 86477073</div>
-                        <div>電話: (04)23269591 &nbsp; FAX: (04)23268576</div>
+                        <div>公司地址: 台中市西區中美街639號</div>
                         <div>發票地址: 新北市三重區重新路5段609巷6號4樓</div>
+                        <div>電話: (04)23269591 &nbsp; FAX: (04)23268576</div>
                     </td>
                 </tr>
             </table>
 
-            <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 15px;">
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 15px; color: #000;">
                 <thead>
                     <tr style="background-color: #f8f9fa;">
-                        <th style="border: 2px solid #333; padding: 10px; text-align: left;">長固代號 / 品名</th>
-                        <th style="border: 2px solid #333; padding: 10px; width: 80px; text-align: center;">數量</th>
-                        <th style="border: 2px solid #333; padding: 10px; width: 100px; text-align: right;">單價</th>
-                        <th style="border: 2px solid #333; padding: 10px; width: 120px; text-align: right;">總計</th>
+                        <th style="border: 2px solid #000; padding: 10px; text-align: left;">長固代號 / 品名</th>
+                        <th style="border: 2px solid #000; padding: 10px; width: 80px; text-align: center;">數量</th>
+                        <th style="border: 2px solid #000; padding: 10px; width: 100px; text-align: right;">單價</th>
+                        <th style="border: 2px solid #000; padding: 10px; width: 120px; text-align: right;">總計</th>
                     </tr>
                 </thead>
                 <tbody>
                     <tr>
-                        <td style="border: 1px solid #333; padding: 15px 10px; text-align: left;">
-                            <div style="font-weight: bold; color: #0d6efd; margin-bottom: 5px;">${escapeQuotes(data.poInternalCode)}</div>
+                        <td style="border: 1px solid #000; padding: 15px 10px; text-align: left;">
+                            <div style="font-weight: bold; margin-bottom: 5px;">${escapeQuotes(data.poInternalCode)}</div>
                             <div>${escapeQuotes(data.poItemName)}</div>
                         </td>
-                        <td style="border: 1px solid #333; padding: 15px 10px; text-align: center; font-size: 18px; font-weight: bold;">${data.poQty}</td>
-                        <td style="border: 1px solid #333; padding: 15px 10px; text-align: right;">${Number(data.poUnitPrice).toLocaleString()}</td>
-                        <td style="border: 1px solid #333; padding: 15px 10px; text-align: right; font-weight: bold;">${totalAmount.toLocaleString()}</td>
+                        <td style="border: 1px solid #000; padding: 15px 10px; text-align: center; font-size: 18px; font-weight: bold;">${data.poQty}</td>
+                        <td style="border: 1px solid #000; padding: 15px 10px; text-align: right;">${Number(data.poUnitPrice).toLocaleString()}</td>
+                        <td style="border: 1px solid #000; padding: 15px 10px; text-align: right; font-weight: bold;">${totalAmount.toLocaleString()}</td>
                     </tr>
                 </tbody>
             </table>
             
-            <div style="margin-top: 15px; font-size: 14px; border: 1px solid #aaa; padding: 10px; background-color: #fcfcfc;">
-                <div style="margin-bottom: 5px;"><strong style="color: #d32f2f;">📍 送貨地點：</strong>${escapeQuotes(data.poAddress)}</div>
+            <div style="margin-top: 15px; font-size: 14px; border: 1px solid #000; padding: 10px; background-color: #fcfcfc; color: #000;">
+                <div style="margin-bottom: 5px;"><strong>📍 送貨地點：</strong>${escapeQuotes(data.poAddress)}</div>
                 <div style="margin-bottom: 5px;"><strong>📦 收貨單位：</strong>${escapeQuotes(data.poReceiveDept)}</div>
                 <div><strong>📝 備註事項：</strong>${escapeQuotes(data.poMemo)}</div>
-            </div>
-
-            <div style="display: flex; justify-content: space-between; margin-top: 40px; font-size: 16px; padding: 0 20px;">
-                <div style="width: 40%;">主管簽核: <span style="border-bottom: 1px solid #000; display: inline-block; width: 70%;">&nbsp;</span></div>
-                <div style="width: 40%;">經辦人: <span style="border-bottom: 1px solid #000; display: inline-block; width: 75%;">&nbsp;${myName}</span></div>
             </div>
         </div>
     `;
