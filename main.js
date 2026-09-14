@@ -640,7 +640,7 @@ function saveEditOrder() {
     if(idx) { const od = globalOrders.find(x => x.rowIdx === idx); if(od){ od.client = c; od.orderNo = o; od.dept = d; od.jsonStr = j; od.deadline = deadline; od.source = src; od.mailUrl = mUrl; od.status = currStatus; } } 
     else { globalOrders.unshift({ rowIdx: Date.now(), time: Date.now(), client: c, orderNo: o, dept: d, status: "待出貨", jsonStr: j, deadline: deadline, source: src, mailUrl: mUrl }); }
     
-    pushToSyncQueue('saveOrderData', payload, null); updateOrderClientDropdown(); window.renderOrderList(); bootstrap.Modal.getInstance(document.getElementById('editOrdModal')).hide(); showToast("✅ 訂單儲存完成");
+    pushToSyncQueue('saveOrderData', payload, null); updateOrderClientDropdown(); window.renderOrderList(); bootstrap.Modal.getInstance(document.getElementById('editOrdModal')).hide(); showToast("✅ 訂單儲存完成 (若與其他單號重複將會自動排查)");
 }
 
 function deleteOrder() { const idx = parseInt(document.getElementById('e_ordRow').value); if(!idx) return; if(confirm('確定要作廢這筆訂單嗎？')) { const o = globalOrders.find(x=>x.rowIdx===idx); if(o) o.status = '已作廢'; pushToSyncQueue('updateOrderStatus', {rowIndices: [idx], status: '已作廢'}, null); updateOrderClientDropdown(); window.renderOrderList(); bootstrap.Modal.getInstance(document.getElementById('editOrdModal')).hide(); } }
@@ -841,7 +841,7 @@ window.openQuotationModal = function(idx) {
         document.getElementById('e_quoNo').value = q.quoteNo;
         document.getElementById('e_quoClient').value = q.client;
         document.getElementById('e_quoUseSeal').checked = q.useSeal;
-        document.getElementById('e_quoMemo').value = q.memo || ''; // 【修正 3】正確帶入備註
+        document.getElementById('e_quoMemo').value = q.memo || ''; 
         
         let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
         items.forEach(i => {
@@ -934,7 +934,7 @@ window.saveEditQuotation = function() {
     const no = document.getElementById('e_quoNo').value.trim();
     const client = document.getElementById('e_quoClient').value;
     const useSeal = document.getElementById('e_quoUseSeal').checked;
-    const memo = document.getElementById('e_quoMemo').value.trim(); // 【修正 3】提取總備註
+    const memo = document.getElementById('e_quoMemo').value.trim(); 
     
     if(!date || !no || !client) return alert("估價日期、編號與客戶名稱皆為必填！");
     
@@ -1172,11 +1172,10 @@ window.printQuotation = function(gid) {
 
     let sealHtml = '';
     if (useSeal) {
-        // 【修正 1】改用 thumbnail API 確保圖片不破圖
-        sealHtml = `<img src="https://drive.google.com/thumbnail?id=1GX-Lkrd7aQgsrMPW5VQ0t_ZzONGe7rin&sz=w800" style="width: 140px; position: absolute; right: 40px; top: 0px; mix-blend-mode: multiply; opacity: 0.85;">`;
+        // 【修正 1、3】更換新印章連結，並將寬度設定為真實物理尺寸 55mm，微調至最右下角
+        sealHtml = `<img src="https://drive.google.com/thumbnail?id=13O2Q2GFzhPfH13SqtFVf4HoiWMTteHtr&sz=w800" style="width: 55mm; position: absolute; right: 40px; top: -10px; mix-blend-mode: multiply; opacity: 0.85;">`;
     }
 
-    // 【修正 3】抓取合併群組內所有的「總備註」，並顯示在表格下方
     let combinedMemo = quotesInGroup.map(q => q.memo).filter(x => x).join(' | ');
     let totalMemoHtml = combinedMemo ? `<div style="margin-top: 15px; font-size: 14px; border: 1px solid #000; padding: 10px; background-color: #fcfcfc; color: #000;"><strong>備註事項：</strong><br>${escapeQuotes(combinedMemo).replace(/\n/g, '<br>')}</div>` : '';
 
@@ -1226,11 +1225,10 @@ window.printQuotation = function(gid) {
                 </tfoot>
             </table>
 
-            ${totalMemoHtml} <!-- 顯示總備註 -->
+            ${totalMemoHtml}
 
-            <!-- 【修正 5】移除簽章，只保留公司名稱與用印 -->
+            <!-- 【修正 5】移除公司文字，只保留用印 -->
             <div style="margin-top: 40px; font-size: 15px; color: #000; position: relative; height: 100px;">
-                <div style="position: absolute; right: 40px; top: 20px; font-weight: bold;">長固實業有限公司</div>
                 ${sealHtml}
             </div>
             
@@ -1317,8 +1315,46 @@ window.reprintPurchaseOrderFast = function(idx) {
     try { const snapData = JSON.parse(l.snapshot); printPurchaseOrder(snapData); } catch(e) { alert("快照資料解析失敗"); }
 }
 
+function voidInv(idx, pNo) { 
+    if(confirm("確定作廢？系統將自動：\n1. 註銷此發票帳款\n2. 註銷銷售明細\n3. 【自動返還已出貨之庫存數量】")) { 
+        const h = globalHistory.find(x=>x.rowIdx === idx); if(h) h.status = '作廢'; 
+        globalSalesDetails.forEach(sd => { 
+            if(sd.paperNo === pNo && sd.shipStatus !== '作廢') { 
+                sd.shipStatus = '作廢'; 
+                if (sd.shippedQty > 0) {
+                    let inv = globalInventory.find(x=>x.name === sd.name); if(inv) inv.qty += sd.shippedQty; 
+                    globalInvLogs.unshift({ time: Date.now(), staff: myName, name: sd.name, type: '作廢返還', qtyChange: sd.shippedQty, newQty: inv ? inv.qty : sd.shippedQty, memo: `作廢單號: ${pNo}` });
+                }
+            } 
+        });
+        populateLogDropdowns(); window.renderHistory(); window.renderInventory(); window.renderInvLogs(); renderShipments(); generateReport(); 
+        pushToSyncQueue('updateInvoiceRecord', {action:'void', rowIdx: idx, staff: myName, paperNo: pNo}, null); showToast("🗑️ 已作廢並返還庫存");
+    } 
+}
+function openEditInv(idx) { const h = globalHistory.find(x=>x.rowIdx === idx); if(!h) return; document.getElementById('e_invRow').value = idx; document.getElementById('e_invPaper').value = h.paperNo; document.getElementById('e_invOrder').value = h.orderNo; document.getElementById('e_invNet').value = h.net; document.getElementById('e_invTotal').value = h.total; document.getElementById('e_invDetails').value = h.details; bootstrap.Modal.getOrCreateInstance(document.getElementById('editInvModal')).show(); }
+function saveEditInvoice() { const idx = parseInt(document.getElementById('e_invRow').value); const h = globalHistory.find(x=>x.rowIdx === idx); const data = { client: h.client, taxId: h.taxId, paperNo: document.getElementById('e_invPaper').value.toUpperCase(), orderNo: document.getElementById('e_invOrder').value, net: document.getElementById('e_invNet').value, tax: Math.round(document.getElementById('e_invTotal').value - document.getElementById('e_invNet').value), total: document.getElementById('e_invTotal').value, details: document.getElementById('e_invDetails').value }; if(h) { Object.assign(h, data); h.historyLog = "[\"修改紀錄存在\"]"; } window.renderHistory(); bootstrap.Modal.getInstance(document.getElementById('editInvModal')).hide(); pushToSyncQueue('updateInvoiceRecord', {action:'edit', rowIdx: idx, staff: myName, data: data}, null); }
+function setReportDate(days) { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - (days - 1)); document.getElementById('repEnd').valueAsDate = e; document.getElementById('repStart').valueAsDate = s; generateReport(); }
+function setReportMonth() { const val = document.getElementById('repMonthPicker').value; if(!val) return; const [year, month] = val.split('-'); document.getElementById('repStart').valueAsDate = new Date(year, month - 1, 1); document.getElementById('repEnd').valueAsDate = new Date(year, month, 0); generateReport(); }
+function generateReport() {
+    const sVal = document.getElementById('repStart').value; const eVal = document.getElementById('repEnd').value; if(!sVal || !eVal) return;
+    const sDate = new Date(sVal); sDate.setHours(0,0,0,0); const eDate = new Date(eVal); eDate.setHours(23,59,59,999);
+    let rCount=0, rNet=0, rTotal=0; const clientStats = {};
+    globalHistory.forEach(h => { const d = new Date(h.time); if(!isNaN(d.getTime()) && d >= sDate && d <= eDate && h.status !== '作廢') { rCount++; rNet += Number(h.net); rTotal += Number(h.total); if(!clientStats[h.client]) clientStats[h.client] = 0; clientStats[h.client] += Number(h.total); } });
+    document.getElementById('repCount').innerText = `${rCount} 張`; document.getElementById('repNet').innerText = `$${rNet.toLocaleString()}`; document.getElementById('repTotal').innerText = `$${rTotal.toLocaleString()}`;
+}
+function exportReportToEmail() {
+    const sVal = document.getElementById('repStart').value; const eVal = document.getElementById('repEnd').value; if(!sVal || !eVal) return alert("請先設定日期");
+    const email = prompt("接收報表的 Email："); if(!email) return; showLoading("產生 Excel 中...");
+    const sDate = new Date(sVal); sDate.setHours(0,0,0,0); const eDate = new Date(eVal); eDate.setHours(23,59,59,999);
+    let rCount=0, rNet=0, rTax=0, rTotal=0; const clientStats = {}; const details = []; const lines = [];
+    globalHistory.forEach(h => { const d = new Date(h.time); if(!isNaN(d.getTime()) && d >= sDate && d <= eDate && h.status !== '作廢') { rCount++; rNet += Number(h.net); rTax += Number(h.tax); rTotal += Number(h.total); if(!clientStats[h.client]) clientStats[h.client] = 0; clientStats[h.client] += Number(h.total); details.push({ date: `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()}`, paperNo: h.paperNo, orderNo: h.orderNo, status: h.status, staff: h.staff, client: h.client, taxId: h.taxId, net: h.net, tax: h.tax, total: h.total, desc: h.details }); } });
+    globalSalesDetails.forEach(s => { const d = new Date(s.time); if(!isNaN(d.getTime()) && d >= sDate && d <= eDate && s.shipStatus !== '作廢') { lines.push({ time: `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()}`, paperNo: s.paperNo, client: s.client, orderNo: s.orderNo, name: s.name, qty: s.qty, price: 0, shipStatus: s.shipStatus, shippedQty: s.shippedQty }); } });
+    const payload = { email: email, dateRange: `${sVal} ~ ${eVal}`, summary: { count: rCount, net: rNet, tax: rTax, total: rTotal }, clientStats: Object.keys(clientStats).map(k=>({name:k, total:clientStats[k]})).sort((a,b)=>b.total-a.total), details: details.reverse(), lineItems: lines.reverse() };
+    callApi('exportExcelReport', payload).then(res => { hideLoading(); alert(`✅ 報表已寄送至 ${email}`); }).catch(err => { hideLoading(); alert("匯出失敗：" + err.message); });
+}
+
 // ============================================================================
-// 管理員與表單工具模組
+// 通用搜尋與管理員模組
 // ============================================================================
 function openSearchModal(type, callback) {
     currentSearchCallback = callback; document.getElementById('searchModalList').innerHTML = ''; document.getElementById('searchModalInput').value = '';
