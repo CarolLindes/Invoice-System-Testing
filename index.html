@@ -51,7 +51,7 @@
     <div class="marquee-container shadow-sm">
       <div class="marquee-content" id="lobbyMarquee">
         <span class="mx-3">🟢 連線正常</span><span class="mx-3" id="mqOnline">👥 1 人</span>
-        <span class="mx-3">💡 系統效能、髒讀防護與拖曳排序優化完成</span><span class="mx-3 text-primary" id="mqMonthCount">🧾 本月已開立 0 張</span>
+        <span class="mx-3">💡 系統效能、防重複訂單與補登發票機制優化完成</span><span class="mx-3 text-primary" id="mqMonthCount">🧾 本月已開立 0 張</span>
       </div>
     </div>
     <div class="home-grid">
@@ -84,7 +84,15 @@
           <ul class="nav nav-pills nav-fill mb-3"><li class="nav-item"><button class="nav-link active fw-bold py-2" data-bs-toggle="pill" data-bs-target="#tabOrdAuto">📷 智慧辨識</button></li><li class="nav-item"><button class="nav-link fw-bold py-2" data-bs-toggle="pill" data-bs-target="#tabOrdManual">⌨️ 手動建檔</button></li></ul>
           <div class="tab-content">
             <div class="tab-pane fade show active" id="tabOrdAuto">
-              <div class="cam-btn mb-3" onclick="document.getElementById('orderImgUpload').click()"><div class="fs-1 mb-2">📸</div><div class="fw-bold text-primary">上傳訂購單 (圖檔或 PDF)</div></div>
+              <div class="d-flex gap-2 mb-3">
+                <div class="cam-btn w-50" onclick="document.getElementById('orderImgUpload').click()">
+                  <div class="fs-1 mb-2">📸</div><div class="fw-bold text-primary small">上傳圖檔或 PDF</div>
+                </div>
+                <!-- 【新增】立即掃描信箱按鈕 -->
+                <div class="cam-btn w-50" style="border-color: #198754; background: #e8f5e9;" onclick="triggerEmailScan()">
+                  <div class="fs-1 mb-2">⚡</div><div class="fw-bold text-success small">掃描信箱新訂單</div>
+                </div>
+              </div>
               <input type="file" id="orderImgUpload" accept="image/*,application/pdf" style="display:none;" onchange="processOrderUpload(this)">
             </div>
             <div class="tab-pane fade" id="tabOrdManual"><button class="btn btn-outline-warning text-dark w-100 fw-bold py-3 mb-3" onclick="openOrderModal(null)">➕ 手動輸入一筆新訂單</button></div>
@@ -130,7 +138,14 @@
         <div class="step-card border-top border-4 border-primary" id="invStep2">
           <div class="d-flex justify-content-between align-items-center mb-3"><h5 class="fw-bold text-primary mb-0">2. 填寫憑證資訊</h5><button class="btn btn-sm btn-outline-secondary" onclick="goStep(1)">上一步</button></div>
           <div class="mb-3"><label class="form-label fw-bold">訂單編號 (選填)</label><input type="text" class="form-control py-2" id="invOrderNo" placeholder="可填入多筆單號"></div>
-          <div class="mb-4"><label class="form-label fw-bold">發票號碼 (選填)</label><input type="text" class="form-control py-2" id="invPaperNo" placeholder="例如：AB-12345678" style="text-transform: uppercase;"></div>
+          <div class="mb-4">
+            <label class="form-label fw-bold">發票號碼 (選填)</label>
+            <!-- 【新增】借用發票號碼輸入框群組 -->
+            <div class="input-group">
+              <input type="text" class="form-control py-2" id="invPaperNo" placeholder="例如：AB-12345678" style="text-transform: uppercase;">
+              <button class="btn btn-outline-danger fw-bold px-3" type="button" onclick="borrowInvoiceNo()">暫無發票 (借用)</button>
+            </div>
+          </div>
           <button class="btn btn-primary w-100 fw-bold py-3 fs-5 shadow-sm" onclick="goStep(3)">下一步：開立品項</button>
         </div>
         <div class="step-card border-top border-4 border-primary" id="invStep3">
@@ -255,7 +270,6 @@
           <div class="mb-3"><label class="small fw-bold text-muted">訂單號碼</label><input type="text" class="form-control" id="e_logOrderNo"></div>
           <div class="mb-4"><label class="small fw-bold text-muted">備註</label><input type="text" class="form-control" id="e_logMemo"></div>
           <div class="d-flex gap-2">
-            <!-- 移除原本這裡的列印訂貨單按鈕 -->
             <button class="btn btn-secondary w-100 fw-bold py-2 shadow-sm" onclick="saveEditInvLog()">💾 儲存修改</button>
           </div>
         </div>
@@ -285,7 +299,6 @@
             <div class="col-6"><label class="small fw-bold text-muted">訂購日期</label><input type="date" class="form-control fw-bold" id="poDate"></div>
             <div class="col-6"><label class="small fw-bold text-muted">訂單號碼 (您向廠商叫貨的單號)</label><input type="text" class="form-control" id="poOrderNo"></div>
           </div>
-          <!-- 移除 readonly，開放修改 -->
           <div class="row g-2 mb-2">
             <div class="col-12"><label class="small fw-bold text-muted">供應商名稱</label><input type="text" class="form-control fw-bold text-dark" id="poSupplier"></div>
           </div>
@@ -294,24 +307,44 @@
             <div class="col-6"><label class="small fw-bold text-muted">供應商傳真</label><input type="text" class="form-control text-secondary" id="poSupFax"></div>
           </div>
           <div class="row g-2 mb-2 mt-3 pt-3 border-top">
-            <!-- 品名與代號維持 readonly -->
             <div class="col-6"><label class="small fw-bold text-muted">品名</label><input type="text" class="form-control bg-light text-dark fw-bold" id="poItemName" readonly></div>
             <div class="col-3"><label class="small fw-bold text-muted">長固代號</label><input type="text" class="form-control bg-light text-primary fw-bold" id="poInternalCode" readonly></div>
-            <!-- 移除 readonly -->
             <div class="col-3"><label class="small fw-bold text-muted">商品單價</label><input type="number" class="form-control text-dark" id="poUnitPrice"></div>
           </div>
           <div class="row g-2 mb-2 mt-3 pt-3 border-top">
-            <!-- 移除 readonly -->
             <div class="col-6"><label class="small fw-bold text-muted">客戶名稱 (送貨對象)</label><input type="text" class="form-control text-dark fw-bold" id="poClientName"></div>
             <div class="col-6"><label class="small fw-bold text-muted">收貨單位 (下拉選單)</label><select class="form-select" id="poReceiveDept"></select></div>
           </div>
-          <!-- 移除 readonly -->
           <div class="mb-3"><label class="small fw-bold text-muted">送貨地點</label><input type="text" class="form-control text-secondary" id="poAddress"></div>
           <div class="row g-2 mb-3 mt-3 pt-3 border-top">
             <div class="col-4"><label class="small fw-bold text-danger">訂貨數量 <span class="text-dark">*</span></label><input type="number" class="form-control fw-bold fs-5 text-danger border-danger" id="poQty" min="0" step="any" inputmode="numeric"></div>
             <div class="col-8"><label class="small fw-bold text-muted">備註</label><input type="text" class="form-control" id="poMemo"></div>
           </div>
           <button class="btn text-white w-100 fw-bold py-3 shadow-sm fs-5 mt-2" style="background-color: #fd7e14;" onclick="confirmPurchaseOrder()">確認訂貨並列印單據</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 【新增】補登發票號碼視窗 -->
+  <div class="modal fade" id="suppInvModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header bg-danger text-white">
+          <h5 class="modal-title fw-bold">📝 補登發票號碼</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="supp_invRowIdx">
+          <div class="mb-3">
+            <label class="small text-muted fw-bold">原借用單號 (系統虛擬單號)</label>
+            <input type="text" class="form-control bg-light text-secondary fw-bold" id="supp_oldPaperNo" readonly>
+          </div>
+          <div class="mb-4">
+            <label class="small text-danger fw-bold">正確發票號碼 <span class="text-dark">*</span></label>
+            <input type="text" class="form-control form-control-lg fw-bold" id="supp_newPaperNo" placeholder="例如：AB-12345678" style="text-transform: uppercase;">
+          </div>
+          <button class="btn btn-danger w-100 fw-bold py-3 shadow-sm fs-5" onclick="confirmSupplementInvoice()">確認補登並自動連動</button>
         </div>
       </div>
     </div>
