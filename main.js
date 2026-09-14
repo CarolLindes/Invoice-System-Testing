@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 長固 ERP 系統 - 前端核心運算邏輯 (測試環境優化版 + 訂購單完美擴充)
+ * 長固 ERP 系統 - 前端核心運算邏輯 (測試環境優化版 + 訂購單完美擴充 + 補登發票機制)
  * ============================================================================
  */
 
@@ -345,13 +345,40 @@ function triggerManualReport() {
 }
 
 // ============================================================================
-// 訂單模組
+// 訂單模組 (含立即掃描與排查機制)
 // ============================================================================
+
+// 【新增】立即掃描信箱新訂單
+window.triggerEmailScan = function() {
+    showLoading("⚡ 正在連線信箱掃描新訂單...");
+    callApi('scanEmailOrders', {}).then(res => {
+        hideLoading();
+        alert(res.msg);
+        refreshData(); // 掃描完立刻重整資料，確保看到最新匯入的訂單
+    }).catch(err => {
+        hideLoading();
+        alert("掃描失敗：" + err.message);
+    });
+};
+
 function processOrderUpload(input) {
     if(!input.files || !input.files[0]) return; const file = input.files[0]; const mimeType = file.type || 'application/pdf'; const reader = new FileReader();
     reader.onload = function(e) {
         showLoading("✨ Gemini AI 智慧辨識中...");
-        callApi('processOrderImage', { base64Str: e.target.result, mimeType: mimeType }).then(res => { hideLoading(); aiTempData = res; document.getElementById('aiClient').value = res.clientName || ''; document.getElementById('aiOrderNo').value = res.orderNo || ''; document.getElementById('aiDept').value = res.department || ''; document.getElementById('aiDeadline').value = ''; recheckAiItems(); document.getElementById('ordStep1').style.display = 'none'; document.getElementById('ordStep2').style.display = 'block'; }).catch(err => { hideLoading(); alert(err.message); });
+        callApi('processOrderImage', { base64Str: e.target.result, mimeType: mimeType }).then(res => { 
+            hideLoading(); 
+            // 由於改成支援陣列，所以取第一筆資料填入 UI，若有多筆建議後端直接 import，這裡是預覽單筆的舊邏輯保留相容
+            let previewData = Array.isArray(res) ? res[0] : res;
+            if(!previewData) return alert('未辨識到訂單資訊');
+            aiTempData = previewData; 
+            document.getElementById('aiClient').value = previewData.clientName || ''; 
+            document.getElementById('aiOrderNo').value = previewData.orderNo || ''; 
+            document.getElementById('aiDept').value = previewData.department || ''; 
+            document.getElementById('aiDeadline').value = ''; 
+            recheckAiItems(); 
+            document.getElementById('ordStep1').style.display = 'none'; 
+            document.getElementById('ordStep2').style.display = 'block'; 
+        }).catch(err => { hideLoading(); alert(err.message); });
     };
     reader.readAsDataURL(file); input.value = '';
 }
@@ -384,7 +411,7 @@ function saveOrderAI() {
     
     globalOrders.unshift({ rowIdx: 9999, time: Date.now(), client: aiTempData.clientName, orderNo: aiTempData.orderNo, dept: aiTempData.department, status: "待出貨", jsonStr: JSON.stringify(aiTempData.items), deadline: aiTempData.deadline, source: aiTempData.source, mailUrl: aiTempData.mailUrl });
     
-    pushToSyncQueue('saveOrderData', aiTempData, null); cancelOrderAI(); updateOrderClientDropdown(); window.renderOrderList(); showToast("✅ 訂單建檔完成");
+    pushToSyncQueue('saveOrderData', aiTempData, null); cancelOrderAI(); updateOrderClientDropdown(); window.renderOrderList(); showToast("✅ 訂單建檔完成 (若有重複將自動排查)");
 }
 
 window.renderOrderList = debounce(function() {
@@ -412,12 +439,20 @@ window.renderOrderList = debounce(function() {
             if (invoicedQty === 0) return `<div>${i.name} ${intCodeBadge} <span class="badge bg-secondary">x${i.qty}</span></div>`; else return `<div>${i.name} ${intCodeBadge} <br><small class="text-primary fw-bold">需求: ${i.qty} | 已開: ${invoicedQty} | 剩餘: <span class="text-danger">${remaining}</span></small></div>`;
         }).join('<hr class="my-2" style="opacity: 0.1;">');
         if (orderFullyShipped && items.length > 0) return;
-        const desc = items.length > 0 ? displayItems : (o.jsonError ? '⚠️ 資料格式損毀' : '無明細'); const warningLabel = o.jsonError ? `<span class="badge bg-danger ms-2">資料異常</span>` : (hasPartial ? `<span class="badge bg-info text-white ms-2">部分開立</span>` : '');
+        
+        // 【新增】防重複訂單 UI 排版
+        let isDuplicate = String(o.status).includes('待排查');
+        let cardStyle = isDuplicate ? 'border: 2px solid #dc3545; background-color: #fff5f5;' : '';
+        let warningLabel = o.jsonError ? `<span class="badge bg-danger ms-2">資料異常</span>` : 
+                           (isDuplicate ? `<span class="badge bg-danger ms-2">⚠️ 單號重複待排查</span>` : 
+                           (hasPartial ? `<span class="badge bg-info text-white ms-2">部分開立</span>` : ''));
+        
+        const desc = items.length > 0 ? displayItems : (o.jsonError ? '⚠️ 資料格式損毀' : '無明細'); 
         
         let deadlineHtml = '';
         if (o.deadline) {
             const deadlineDate = new Date(o.deadline); deadlineDate.setHours(0,0,0,0); const diffDays = Math.ceil((deadlineDate - today) / 86400000);
-            if (diffDays < 0) deadlineHtml = `<span class="badge bg-danger ms-2">🔴 已逾期 (${o.deadline})</span>`; else if (diffDays === 0) deadlineHtml = `<span class="badge bg-danger ms-2">🔴 今日出貨 (${o.deadline})</span>`; else if (diffDays <= 3) deadlineHtml = `<span class="badge bg-warning text-dark ms-2">🟡 即將到期 (${o.deadline})</span>`; else deadlineHtml = `<span class="badge bg-success ms-2">🟢 期限: ${o.deadline}</span>`;
+            if (diffDays < 0) deadlineHtml = `<span class="badge bg-danger ms-2">🔴 已逾期 (${o.deadline})</span>`; else if (diffDays === 0) deadlineHtml = `<span class="badge bg-danger ms-2">🔴 今日出貨 (${o.deadline})</span>`; else if (diffDays <= 3) deadlineHtml = `<span class="badge bg-warning text-dark ms-2">🟡 即觸到期 (${o.deadline})</span>`; else deadlineHtml = `<span class="badge bg-success ms-2">🟢 期限: ${o.deadline}</span>`;
         }
 
         const sourceStr = o.source || '⌨️ 手動建檔';
@@ -428,7 +463,7 @@ window.renderOrderList = debounce(function() {
 
         let mailBtn = o.mailUrl ? `<a href="${escapeQuotes(o.mailUrl)}" target="_blank" class="btn btn-sm btn-outline-primary fw-bold me-2">📧 查閱原信</a>` : '';
 
-        html += `<div class="item-row bg-white shadow-sm mb-2 p-3 ${hasPartial ? 'status-partial' : ''}">
+        html += `<div class="item-row shadow-sm mb-2 p-3 ${hasPartial ? 'status-partial' : ''}" style="${cardStyle}">
             <div class="d-flex align-items-center justify-content-between mb-2 border-bottom pb-2">
                 <div class="d-flex align-items-center" style="max-width: 65%;">
                     <input class="form-check-input me-3 cb-order" type="checkbox" value="${o.rowIdx}" data-orderno="${escapeQuotes(o.orderNo)}" data-client="${escapeQuotes(o.client)}" style="transform: scale(1.3); flex-shrink: 0;">
@@ -538,17 +573,20 @@ function saveEditOrder() {
     
     let src = '⌨️ 手動建檔'; 
     let mUrl = '';
+    let currStatus = '待出貨';
     if(idx) { 
         const od = globalOrders.find(x => x.rowIdx === idx); 
-        if(od) { src = od.source || '⌨️ 手動建檔'; mUrl = od.mailUrl || ''; } 
+        if(od) { src = od.source || '⌨️ 手動建檔'; mUrl = od.mailUrl || ''; currStatus = od.status; } 
     }
     
     const j = JSON.stringify(items); 
-    const payload = { rowIdx: idx||null, clientName: c, orderNo: o, department: d, status: '待出貨', items: items, deadline: deadline, source: src, mailUrl: mUrl }; 
+    // 若原先是「待排查」，手動編輯儲存後一律切回「待出貨」或保持原本的狀態
+    if (currStatus.includes('待排查')) currStatus = '待出貨';
+    const payload = { rowIdx: idx||null, clientName: c, orderNo: o, department: d, status: currStatus, items: items, deadline: deadline, source: src, mailUrl: mUrl }; 
     
     if(idx) { 
         const od = globalOrders.find(x => x.rowIdx === idx); 
-        if(od){ od.client = c; od.orderNo = o; od.dept = d; od.jsonStr = j; od.deadline = deadline; od.source = src; od.mailUrl = mUrl; } 
+        if(od){ od.client = c; od.orderNo = o; od.dept = d; od.jsonStr = j; od.deadline = deadline; od.source = src; od.mailUrl = mUrl; od.status = currStatus; } 
     } else { 
         globalOrders.unshift({ rowIdx: Date.now(), time: Date.now(), client: c, orderNo: o, dept: d, status: "待出貨", jsonStr: j, deadline: deadline, source: src, mailUrl: mUrl }); 
     }
@@ -556,7 +594,8 @@ function saveEditOrder() {
     pushToSyncQueue('saveOrderData', payload, null); 
     updateOrderClientDropdown(); 
     window.renderOrderList(); 
-    bootstrap.Modal.getInstance(document.getElementById('editOrdModal')).hide();
+    bootstrap.Modal.getInstance(document.getElementById('editOrdModal')).show().hide();
+    showToast("✅ 訂單儲存完成 (若與其他單號重複將會自動排查)");
 }
 
 function deleteOrder() {
@@ -569,13 +608,19 @@ function groupFulfillOrders() {
     let client = ''; let valid = true; let ids = []; cbs.forEach(cb => { ids.push(parseInt(cb.value)); if(!client) client = cb.dataset.client; else if(client !== cb.dataset.client) valid = false; });
     if(!valid) return alert('群組合併開票必須為【同一間客戶】，請重新勾選。');
     selectedOrderCache = globalOrders.filter(o => ids.includes(o.rowIdx)); enterSystem('invoice');
-    document.getElementById('invClientInput').value = client; currentInvoiceData.clientName = client; const cObj = globalClients.find(x => x.name === client); currentInvoiceData.taxId = cObj ? cObj.taxId : ''; document.getElementById('invClientInfo').innerText = `✓ 綁定成功 (統編: ${currentInvoiceData.taxId||'無'})`; document.getElementById('invClientInfo').style.display = 'block'; document.getElementById('btnNext1').style.display = 'block'; document.getElementById('invOrderNo').value = [...new Set(selectedOrderCache.map(o => o.orderNo).filter(x=>x))].join(', ');
+    document.getElementById('invClientInput').value = client; currentInvoiceData.clientName = client; const cObj = globalClients.find(x => x.name === client); currentInvoiceData.taxId = cObj ? cObj.taxId : ''; document.getElementById('invClientInfo').innerText = `✓ 綁定成功 (統編: ${currentInvoiceData.taxId||'無'})`; document.getElementById('invClientInfo').style.display = 'block'; document.getElementById('btnNext1').style.display = 'block'; 
+    document.getElementById('invOrderNo').value = [...new Set(selectedOrderCache.map(o => o.orderNo).filter(x=>x))].join(', ');
     
     currentInvoiceData.items = []; document.getElementById('invAiNotice').style.display = 'block';
     selectedOrderCache.forEach(order => {
         let items = []; try { items = JSON.parse(order.jsonStr || '[]'); } catch(e){}
         items.forEach(i => {
-            let invoicedQty = globalSalesDetails.filter(d => d.orderNo === order.orderNo && d.name === i.name && d.shipStatus !== '作廢').reduce((sum, d) => sum + d.qty, 0); let remaining = i.qty - invoicedQty;
+            let invoicedQty = globalSalesDetails.filter(d => {
+                let dOrderNos = String(d.orderNo).split(',').map(s=>s.trim());
+                return dOrderNos.includes(order.orderNo) && d.name === i.name && d.shipStatus !== '作廢';
+            }).reduce((sum, d) => sum + d.qty, 0); 
+            
+            let remaining = i.qty - invoicedQty;
             if (remaining > 0) {
                 const rowId = `invR_${Date.now()}_${Math.random().toString(36).substring(2)}`; const p = globalCatalog.find(x => x.clientName === client && x.productName === i.name);
                 let price = p ? p.price : 0; let unit = p ? p.unit : '式'; let internalCode = p ? (p.internalCode || p.assetCode) : '';
@@ -591,6 +636,14 @@ function groupFulfillOrders() {
 // ============================================================================
 function goStep(s) { document.querySelectorAll('#sys-invoice .step-card').forEach(c=>c.style.display='none'); document.getElementById('invStep'+s).style.display='block'; document.getElementById('mainApp').scrollTo(0,0); }
 function selectClientForInvoice(name) { const c = globalClients.find(x => x.name === name); if(!c) return; document.getElementById('invClientInput').value = name; currentInvoiceData.clientName = name; currentInvoiceData.taxId = c.taxId; document.getElementById('invClientInfo').innerText = `✓ 綁定成功 (統編: ${c.taxId||'無'})`; document.getElementById('invClientInfo').style.display = 'block'; document.getElementById('btnNext1').style.display = 'block'; document.getElementById('invOrderNo').value = ''; selectedOrderCache = []; document.getElementById('invAiNotice').style.display = 'none'; }
+
+// 【新增】借用發票號碼邏輯
+window.borrowInvoiceNo = function() {
+    // 產生專屬借用碼
+    const tempNo = "[借用中]-" + Math.floor(Math.random() * 10000000);
+    document.getElementById('invPaperNo').value = tempNo;
+    showToast("✅ 已帶入借用單號，請繼續開立，日後可至紀錄補登");
+};
 
 function renderSingleInvoiceItem(item) {
     let isMatch = item.product ? true : false;
@@ -770,7 +823,6 @@ window.renderInvLogs = debounce(function() {
         if (l.arrivalDate) extInfo.push(`進貨日: ${l.arrivalDate}`);
         let extHtml = extInfo.length > 0 ? `<div class="small text-primary fw-bold mt-1">${extInfo.join(' | ')}</div>` : '';
         
-        // 【優化】動態產生操作按鈕 (外顯列印按鈕)
         let actionBtns = `<button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openEditInvLogModal(${l.rowIdx})">✏️ 編輯</button>`;
         if (l.type === "向廠商訂貨" && l.snapshot) {
             actionBtns = `<button class="btn btn-sm btn-outline-info fw-bold me-1 text-dark" onclick="reprintPurchaseOrderFast(${l.rowIdx})">🖨️ 列印</button>` + actionBtns;
@@ -792,7 +844,6 @@ window.renderInvLogs = debounce(function() {
     }).join('');
 }, 300);
 
-// 【擴充】庫存異動紀錄編輯器
 function openEditInvLogModal(idx) {
     const l = globalInvLogs.find(x => x.rowIdx === idx); if(!l) return;
     document.getElementById('e_logRowIdx').value = idx;
@@ -838,7 +889,6 @@ function selectProductForAdj(val) {
         let intCode = p.internalCode || p.assetCode || '';
         document.getElementById('adjInternalCode').value = intCode;
         
-        // 嘗試自動抓供應商
         if (intCode) {
             const parts = intCode.split('-');
             if (parts.length > 1) {
@@ -862,7 +912,6 @@ function saveInventoryAdjust() {
     populateLogDropdowns(); window.renderInventory(); window.renderInvLogs(); bootstrap.Modal.getInstance(document.getElementById('adjInvModal')).hide(); pushToSyncQueue('adjustInventory', payload, null);
 }
 
-// 【擴充】欠貨出貨 / 訂貨模組
 function renderShipments() {
     const c = document.getElementById('stkShipContainer'); const pending = globalSalesDetails.filter(s => s.shipStatus !== '已結案' && s.shipStatus !== '作廢');
     if(pending.length === 0) return c.innerHTML = '<div class="text-center text-muted py-4">✅ 所有已開立發票之品項皆已全數出貨完畢</div>';
@@ -897,29 +946,22 @@ function confirmShipment() {
     populateLogDropdowns(); window.renderInvLogs(); window.renderInventory(); renderShipments(); bootstrap.Modal.getInstance(document.getElementById('shipModal')).hide(); pushToSyncQueue('updateShipment', {updates: [{rowIdx: rowIdx, paperNo: s.paperNo, name: s.name, shipQty: qty, totalQty: s.qty}], staff: myName}, null); showToast("🚚 出貨與庫存扣抵完成");
 }
 
-// ============================================================================
-// 【全新】向廠商訂貨 (採購單) 模組
-// ============================================================================
 function openPurchaseOrderModal(salesRowIdx) {
     const s = globalSalesDetails.find(x => x.rowIdx === salesRowIdx); if(!s) return;
     
-    // 初始化清空
     document.getElementById('poDate').value = getTodayStr();
     document.getElementById('poSupplier').value = '';
     document.getElementById('poSupPhone').value = '';
     document.getElementById('poSupFax').value = '';
     document.getElementById('poMemo').value = '';
     
-    // 填寫基本對應
     document.getElementById('poItemName').value = s.name;
     document.getElementById('poClientName').value = s.client;
-    // 【優化】自動帶入後台原始訂單編號
     document.getElementById('poOrderNo').value = s.orderNo || '';
     
     const remainQty = s.qty - s.shippedQty;
     document.getElementById('poQty').value = remainQty;
 
-    // 尋找長固代號與價格
     const p = globalCatalog.find(x => x.clientName === s.client && x.productName === s.name);
     let intCode = '';
     if (p) {
@@ -929,7 +971,6 @@ function openPurchaseOrderModal(salesRowIdx) {
         let inv = globalInventory.find(x => x.name === s.name);
         document.getElementById('poUnitPrice').value = inv ? (inv.cost || 0) : 0;
 
-        // 智慧比對供應商
         if (intCode) {
             const parts = intCode.split('-');
             if (parts.length > 1) {
@@ -944,7 +985,6 @@ function openPurchaseOrderModal(salesRowIdx) {
         }
     }
 
-    // 尋找客戶地址與收貨單位
     const cObj = globalClients.find(x => x.name === s.client);
     document.getElementById('poAddress').value = cObj ? (cObj.address || '') : '';
     
@@ -968,7 +1008,6 @@ function confirmPurchaseOrder() {
     const qty = parseFloat(document.getElementById('poQty').value);
     if (isNaN(qty) || qty <= 0) return alert("請輸入正確的訂貨數量！");
     
-    // 收集畫面上的所有資料打包成快照
     const snapData = {
         poDate: document.getElementById('poDate').value,
         poOrderNo: document.getElementById('poOrderNo').value,
@@ -991,10 +1030,9 @@ function confirmPurchaseOrder() {
         orderNo: snapData.poOrderNo,
         orderDate: snapData.poDate,
         memo: snapData.poMemo,
-        snapshot: JSON.stringify(snapData) // 整包資料轉 JSON 字串存到 M 欄
+        snapshot: JSON.stringify(snapData) 
     };
 
-    // 樂觀更新前端異動紀錄
     let inv = globalInventory.find(x => x.name === snapData.poItemName);
     let currentQty = inv ? inv.qty : 0;
     globalInvLogs.unshift({
@@ -1021,7 +1059,6 @@ function confirmPurchaseOrder() {
     }, 500);
 }
 
-// 【優化】直接從異動清單一鍵列印
 window.reprintPurchaseOrderFast = function(idx) {
     const l = globalInvLogs.find(x => x.rowIdx === idx);
     if (!l || !l.snapshot) return alert("無快照可列印！");
@@ -1037,11 +1074,9 @@ function printPurchaseOrder(data) {
     const totalAmount = parseFloat(data.poQty) * parseFloat(data.poUnitPrice || 0);
     const dateStr = data.poDate ? data.poDate.replace(/-/g, '/') : getTodayStr().replace(/-/g, '/');
 
-    // 【優化】A5橫式專屬排版設計，字體加深加粗、移除簽章
     const html = `
         <div style="padding: 0; width: 100%; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif;">
             <div style="text-align: center; font-size: 26px; font-weight: 900; letter-spacing: 5px; margin-bottom: 10px; color: #000;">長固實業有限公司 - 訂貨單</div>
-            
             <table style="width: 100%; border: none; margin-bottom: 15px; font-size: 14px; color: #000;">
                 <tr>
                     <td style="width: 50%; vertical-align: top;">
@@ -1092,8 +1127,6 @@ function printPurchaseOrder(data) {
     `;
 
     document.getElementById('printPoArea').innerHTML = html;
-    
-    // 切換列印模式
     document.getElementById('printPoArea').classList.add('print-active');
     document.getElementById('printArea').classList.remove('print-active');
     
@@ -1101,7 +1134,7 @@ function printPurchaseOrder(data) {
 }
 
 // ============================================================================
-// 報表與發票出貨單列印模組
+// 報表與發票出貨單列印模組 (含發票補登功能)
 // ============================================================================
 window.renderHistory = debounce(function() {
     const fStaff = document.getElementById('histFilterStaff').value; const fClient = document.getElementById('histFilterClient').value; const fDate = document.getElementById('histFilterDate').value; const fStatus = document.getElementById('histFilterStatus').value; const term = document.getElementById('histSearch').value.toLowerCase();
@@ -1114,21 +1147,63 @@ window.renderHistory = debounce(function() {
     c.innerHTML = filtered.map(h => {
         const d = new Date(h.time); const dateStr = isNaN(d.getTime()) ? '未知' : `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
         const isVoid = h.status === '作廢'; const isEdited = h.historyLog && h.historyLog.length > 2;
+        
         let badgeHTML = isVoid ? '<span class="badge bg-danger ms-1">已作廢</span>' : '';
         if(isEdited && !isVoid) badgeHTML += `<span class="badge bg-warning text-dark ms-1" onclick="alert('修改紀錄：\\n${escapeQuotes(JSON.parse(h.historyLog).join('\\n'))}')" style="cursor:pointer;">⚠️ 已修改</span>`;
+        
+        // 【新增】判斷借用單號 UI
+        const isBorrowed = String(h.paperNo).startsWith('[借用中]');
+        let paperNoHtml = h.paperNo ? (isBorrowed ? `<span class="text-danger">⚠️ ${h.paperNo}</span>` : `發票: ${h.paperNo}`) : '';
+
+        // 【新增】按鈕配置 (包含補登按鈕)
+        let actionBtns = '';
+        if (!isVoid) {
+            actionBtns += `<button class="btn btn-sm btn-outline-info me-1 fw-bold" onclick="printDeliveryNote(${h.rowIdx})">🖨️ 列印出單</button>`;
+            if (isBorrowed) {
+                actionBtns += `<button class="btn btn-sm btn-danger me-1 fw-bold" onclick="openSuppInvModal(${h.rowIdx}, '${escapeQuotes(h.paperNo)}')">📝 補登發票</button>`;
+            }
+            actionBtns += `<button class="btn btn-sm btn-outline-danger me-1" onclick="voidInv(${h.rowIdx}, '${escapeQuotes(h.paperNo)}')">作廢</button>`;
+            actionBtns += `<button class="btn btn-sm btn-outline-secondary" onclick="openEditInv(${h.rowIdx})">編輯</button>`;
+        }
+
         return `<div class="item-row bg-white shadow-sm p-3 ${isVoid?'status-void':''}">
             <div class="d-flex justify-content-between align-items-start border-bottom pb-2 mb-2">
                 <div><div class="fw-bold fs-6 text-dark">${h.client} ${badgeHTML}</div><div class="small text-muted">單號: ${h.orderNo||'--'} | 開立: ${h.staff}</div></div>
-                <div class="text-end"><div class="badge bg-light text-dark border">${dateStr}</div><div class="small text-muted mt-1 fw-bold text-danger">${h.paperNo?'發票: '+h.paperNo:''}</div></div>
+                <div class="text-end"><div class="badge bg-light text-dark border">${dateStr}</div><div class="small mt-1 fw-bold ${isBorrowed?'text-danger':'text-primary'}">${paperNoHtml}</div></div>
             </div>
             <div class="history-details text-muted mb-3">${h.details}</div>
             <div class="d-flex justify-content-between align-items-center">
-                <div>${!isVoid ? `<button class="btn btn-sm btn-outline-info me-1 fw-bold" onclick="printDeliveryNote(${h.rowIdx})">🖨️ 列印出單</button><button class="btn btn-sm btn-outline-danger me-1" onclick="voidInv(${h.rowIdx}, '${escapeQuotes(h.paperNo)}')">作廢</button><button class="btn btn-sm btn-outline-secondary" onclick="openEditInv(${h.rowIdx})">編輯</button>` : ''}</div>
+                <div>${actionBtns}</div>
                 <span class="fw-bold text-danger fs-5">$${Number(h.total).toLocaleString()}</span>
             </div>
         </div>`;
     }).join('');
 }, 300);
+
+// 【新增】開啟補登發票視窗
+window.openSuppInvModal = function(idx, oldPaperNo) {
+    document.getElementById('supp_invRowIdx').value = idx;
+    document.getElementById('supp_oldPaperNo').value = oldPaperNo;
+    document.getElementById('supp_newPaperNo').value = '';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('suppInvModal')).show();
+};
+
+// 【新增】確認補登發票並連動
+window.confirmSupplementInvoice = function() {
+    const idx = parseInt(document.getElementById('supp_invRowIdx').value);
+    const oldPaperNo = document.getElementById('supp_oldPaperNo').value;
+    const newPaperNo = document.getElementById('supp_newPaperNo').value.trim().toUpperCase();
+
+    if (!newPaperNo) return alert("請輸入正確的發票號碼！");
+    
+    showLoading("連動更新中...");
+    pushToSyncQueue('supplementInvoiceNo', { rowIdx: idx, oldPaperNo: oldPaperNo, newPaperNo: newPaperNo, staff: myName }, function(res) {
+        hideLoading();
+        bootstrap.Modal.getInstance(document.getElementById('suppInvModal')).hide();
+        showToast("✅ 發票號碼已成功補登並連動更新");
+        refreshData(); // 強制重整以確保三張表的資料都拿到最新版
+    });
+};
 
 function printDeliveryNote(idx) {
     const h = globalHistory.find(x => x.rowIdx === idx); if (!h) return;
@@ -1213,7 +1288,6 @@ function printDeliveryNote(idx) {
 
     document.getElementById('printArea').innerHTML = html;
     
-    // 切換列印模式
     document.getElementById('printArea').classList.add('print-active');
     document.getElementById('printPoArea').classList.remove('print-active');
     
