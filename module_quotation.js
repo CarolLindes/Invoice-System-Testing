@@ -380,13 +380,13 @@ window.verifyQuotationToInvoice = function(gid) {
     quotesInGroup.forEach(q => q.status = '已核銷');
     pushToSyncQueue('updateQuotationStatus', { rowIndices: ids, status: '已核銷' }, null);
 
-    if (typeof reRenderInvoiceItems === "function") reRenderInvoiceItems();
-    if (typeof goStep === "function") goStep(2); 
+    if (typeof window.reRenderInvoiceItems === "function") window.reRenderInvoiceItems();
+    if (typeof window.goStep === "function") window.goStep(2); 
     showToast("✅ 已將估價單品項全數載入發票系統！您可以自由刪減本次要開立的品項 (每張發票限5筆)。");
 };
 
 // ============================================================================
-// 列印估價單 (支援 A4 舒展排版、過濾日期、真實公司大小章 - 改用 Thumbnail API)
+// 列印估價單 (支援 A4 舒展排版、過濾日期、真實公司大印章 - 改用 Thumbnail API)
 // ============================================================================
 window.printQuotation = function(gid) {
     const quotesInGroup = globalQuotes.filter(q => q.mergeId === gid || `Single_${q.rowIdx}` === gid);
@@ -440,13 +440,11 @@ window.printQuotation = function(gid) {
         `;
     }).join('');
 
-    // 【更新】使用 Thumbnail API 以繞過 Google 防盜鏈阻擋
+    // (3) 完美替換真實大小章 (利用 mix-blend-mode 模擬印章蓋印效果) - 移除小章，只留大章
     const sealHtml = useSeal ? `
         <div style="position: absolute; right: 50px; bottom: 10px; display: flex; align-items: flex-end; pointer-events: none; z-index: 10; opacity: 0.95;">
             <!-- 大章 -->
             <img src="https://drive.google.com/thumbnail?id=1f6zlONs70zTGucx1h5ttJD1OLzyygXuu&sz=w800" alt="大章" style="width: 150px; height: auto; mix-blend-mode: multiply;">
-            <!-- 小章 (疊加在大章左下) -->
-            <img src="https://drive.google.com/thumbnail?id=1AnqCPy5MbzXcEwsQFxHVBiS_pZB7AL6z&sz=w800" alt="小章" style="width: 55px; height: auto; mix-blend-mode: multiply; margin-left: -40px; margin-bottom: 10px;">
         </div>
     ` : '';
 
