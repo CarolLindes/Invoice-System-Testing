@@ -4,7 +4,7 @@
  * ============================================================================
  */
 
-// 🔴 系統 API 端點 (已更新為測試環境專用網址)
+// 🔴 系統 API 端點 (依據原始設定)
 const API_URL = "https://script.google.com/macros/s/AKfycbwR4pxjLSldLQW3sG7y8FiTPyV4mZg4rq0L33k0Htz26RxK8mrjFpucpW7pnBmpZaXD/exec";
 
 // ============================================================================
@@ -22,12 +22,14 @@ let globalOrders = [];
 let globalInventory = []; 
 let globalSalesDetails = []; 
 let globalInvLogs = []; 
+let globalQuotes = []; // 【補回】估價單全域資料
 let emailSettingsData = { list: [], selected: [] };
 
 let myLastSyncTime = 0;
 
 let aiTempData = null; 
 let currentOrderManualItems = []; 
+let currentQuoItems = []; // 【補回】估價單當前編輯品項
 let selectedOrderCache = []; 
 let currentInvoiceData = { clientName:'', taxId:'', items:[] }; 
 let currentSearchSource = []; 
@@ -64,8 +66,11 @@ let syncTimeoutTimer = null;
 function pushToSyncQueue(action, payload, callback) { 
     if (payload && typeof payload === 'object') {
         payload.clientSyncTime = myLastSyncTime;
+        if (!payload.taskId) {
+            payload.taskId = 'T_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+        }
     }
-    bgSyncQueue.push({ action, payload, callback, retry: 0 }); 
+    bgSyncQueue.push({ action, payload, callback, retry: 0, time: Date.now() }); 
     updateSyncIndicator(); 
     triggerSync(); 
 }
@@ -80,7 +85,7 @@ function triggerSync() {
         console.warn("同步超時，強制重置狀態");
         task.retry += 1;
         handleSyncRetry(task);
-    }, 15000);
+    }, 30000);
 
     callApi(task.action, task.payload).then(res => {
         clearTimeout(syncTimeoutTimer);
@@ -98,6 +103,7 @@ function triggerSync() {
             alert(e.message);
             bgSyncQueue.shift();
             isSyncing = false;
+            updateSyncIndicator();
             return;
         }
         task.retry += 1;
@@ -114,11 +120,17 @@ function handleSyncRetry(task) {
         localStorage.setItem('failedSyncTasks', JSON.stringify(failedTasks));
         bgSyncQueue.shift(); 
         checkFailedTasks(); 
+        updateSyncIndicator();
     }
     isSyncing = false; 
-    setTimeout(triggerSync, 5000); 
+    if (bgSyncQueue.length > 0) {
+        setTimeout(triggerSync, 5000); 
+    }
 }
 
+// ============================================================================
+// 報錯與未同步處理中心介面
+// ============================================================================
 function checkFailedTasks() {
     let failedTasks = [];
     try { failedTasks = JSON.parse(localStorage.getItem('failedSyncTasks') || '[]'); } catch(e){}
@@ -128,28 +140,103 @@ function checkFailedTasks() {
         btn.id = 'btnRetrySync';
         btn.className = 'btn btn-danger fw-bold shadow position-fixed';
         btn.style.cssText = 'bottom: 20px; right: 20px; z-index: 10800; border-radius: 30px; padding: 10px 20px; font-size: 0.9rem;';
-        btn.onclick = window.retryFailedTasks;
+        btn.onclick = window.openSyncErrorModal;
         document.body.appendChild(btn);
     }
     if (failedTasks.length > 0) {
-        btn.innerText = `🔴 有 ${failedTasks.length} 筆未同步資料 (點擊重試)`;
+        btn.innerText = `🔴 有 ${failedTasks.length} 筆未同步資料 (點擊處理)`;
         btn.style.display = 'block';
     } else {
         btn.style.display = 'none';
     }
 }
 
-window.retryFailedTasks = function() {
+window.openSyncErrorModal = function() {
+    renderSyncErrorList();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('syncErrorModal')).show();
+};
+
+function renderSyncErrorList() {
     let failedTasks = [];
     try { failedTasks = JSON.parse(localStorage.getItem('failedSyncTasks') || '[]'); } catch(e){}
-    if (failedTasks.length === 0) return alert("沒有未同步的資料");
-    failedTasks.forEach(task => { task.retry = 0; bgSyncQueue.push(task); });
-    localStorage.removeItem('failedSyncTasks');
-    checkFailedTasks();
-    updateSyncIndicator();
-    triggerSync();
-    showToast("🔄 已將失敗任務重新加入同步佇列");
+    const c = document.getElementById('syncErrorList');
+    
+    if (failedTasks.length === 0) {
+        c.innerHTML = '<div class="text-center text-success fw-bold py-4 fs-5">✅ 所有資料皆已同步完成！</div>';
+        checkFailedTasks();
+        setTimeout(() => bootstrap.Modal.getInstance(document.getElementById('syncErrorModal')).hide(), 1500);
+        return;
+    }
+    
+    c.innerHTML = failedTasks.map((t, idx) => {
+        const dateStr = t.time ? new Date(t.time).toLocaleString() : '未知時間';
+        const desc = translateTaskDesc(t);
+        return `<div class="bg-white border rounded p-3 mb-2 shadow-sm d-flex justify-content-between align-items-center">
+            <div>
+                <div class="fw-bold text-dark fs-6">${desc}</div>
+                <div class="small text-muted mt-1">🕒 發生時間: ${dateStr}</div>
+                <div class="small text-secondary" style="font-size: 0.75rem;">內部指令: ${t.action}</div>
+            </div>
+            <div class="d-flex flex-column gap-2" style="min-width: 100px;">
+                <button class="btn btn-sm btn-primary fw-bold" onclick="retrySingleTask(${idx})">🔄 重新傳送</button>
+                <button class="btn btn-sm btn-outline-danger fw-bold" onclick="discardSingleTask(${idx})">🗑️ 清除捨棄</button>
+            </div>
+        </div>`;
+    }).join('');
 }
+
+function translateTaskDesc(t) {
+    const p = t.payload || {};
+    switch(t.action) {
+        case 'saveOrderData': return `📦 建立/編輯訂單 | 醫院: ${p.clientName||'未知'} | 單號: ${p.orderNo||'無'}`;
+        case 'submitInvoice': return `📝 開立發票 | 客戶: ${p.clientName||'未知'} | 總計: $${(p.totalWithTax||0).toLocaleString()}`;
+        case 'updateShipment': return `🚚 出貨作業 | 扣庫存 (${p.updates?.[0]?.name||'多筆品項'})`;
+        case 'adjustInventory': return `🏭 庫存異動 | 品項: ${p.name||'未知'} | 動作: ${p.type||''} (${(p.changeQty||0)>0?'+':''}${p.changeQty||0})`;
+        case 'submitPurchaseOrder': return `🛒 向廠商訂貨 | 品項: ${p.name||'未知'}`;
+        case 'supplementInvoiceNo': return `📝 補登發票 | 新號碼: ${p.newPaperNo||'未知'}`;
+        case 'addClientData': return `🏢 新增客戶 | 名稱: ${p.clientName||'未知'}`;
+        case 'updateClientData': return `🏢 修改客戶 | 名稱: ${p.newName||'未知'}`;
+        case 'saveAdminItem': return `📦 編輯報價品項 | 品名: ${p.productName||'未知'}`;
+        case 'editInvLogRecord': return `✏️ 編輯異動紀錄 | 單號: ${p.invoiceNo||p.orderNo||'未知'}`;
+        case 'updateInvoiceRecord': return `🗑️ 發票狀態操作 | 動作: ${p.action==='void'?'作廢':'修改'}`;
+        case 'updateOrderStatus': return `📝 訂單狀態更新 | 狀態變更`;
+        case 'saveQuotation': return `📑 建立/編輯估價單 | 客戶: ${p.clientName} | 單號: ${p.quoteNo}`;
+        case 'mergeQuotations': return `🔗 合併估價單 | 群組 ID: ${p.mergeId}`;
+        case 'unmergeQuotations': return `✂️ 解除合併估價單`;
+        case 'updateQuotationStatus': return `🔄 更改估價單狀態 | 新狀態: ${p.status}`;
+        case 'splitAndVoidQuotationItems': return `🗑️ 拆分作廢估價單品項 | 單號: ${p.quoteNo}`;
+        default: return `⚙️ 系統操作 (${t.action})`;
+    }
+}
+
+window.retrySingleTask = function(idx) {
+    let failedTasks = [];
+    try { failedTasks = JSON.parse(localStorage.getItem('failedSyncTasks') || '[]'); } catch(e){}
+    if (failedTasks[idx]) {
+        let t = failedTasks[idx];
+        t.retry = 0; 
+        bgSyncQueue.push(t);
+        failedTasks.splice(idx, 1);
+        localStorage.setItem('failedSyncTasks', JSON.stringify(failedTasks));
+        renderSyncErrorList();
+        checkFailedTasks();
+        updateSyncIndicator();
+        triggerSync();
+        showToast("🔄 已加入同步佇列重試");
+    }
+};
+
+window.discardSingleTask = function(idx) {
+    if(!confirm("確定要捨棄這筆資料嗎？\n(捨棄後資料將不會寫入系統，請確認您已不需要此操作)")) return;
+    let failedTasks = [];
+    try { failedTasks = JSON.parse(localStorage.getItem('failedSyncTasks') || '[]'); } catch(e){}
+    if (failedTasks[idx]) {
+        failedTasks.splice(idx, 1);
+        localStorage.setItem('failedSyncTasks', JSON.stringify(failedTasks));
+        renderSyncErrorList();
+        checkFailedTasks();
+    }
+};
 
 function updateSyncIndicator() { 
     const ind = document.getElementById('bgSyncIndicator'); 
@@ -165,10 +252,10 @@ function updateSyncIndicator() {
 function silentRefreshData() {
     callApi('getInitData', {}).then(res => {
         globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
+        globalQuotes = res.quotes || []; // 【補回】
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
-        // 防護機制：確認其他模組已載入再呼叫
         if (typeof populateAdminClientFilter === "function") populateAdminClientFilter();
         if (typeof updateHistoryDropdowns === "function") updateHistoryDropdowns();
         if (typeof populateLogDropdowns === "function") populateLogDropdowns();
@@ -179,6 +266,7 @@ function silentRefreshData() {
         if(document.getElementById('sys-admin').style.display === 'block' && typeof window.renderAdminItems === "function") { window.renderAdminItems(); window.renderAdminClients(); }
         if(document.getElementById('sys-order').style.display === 'block' && typeof window.renderOrderList === "function") window.renderOrderList();
         if(document.getElementById('sys-inventory').style.display === 'block' && typeof window.renderInventory === "function") { window.renderInventory(); window.renderInvLogs(); renderShipments(); }
+        if(document.getElementById('sys-quotation').style.display === 'block' && typeof window.renderQuotationList === "function") window.renderQuotationList(); 
     }).catch(err => console.log('背景默默同步失敗:', err));
 }
 
@@ -204,6 +292,75 @@ function debounce(func, delay = 300) {
 }
 
 // ============================================================================
+// 【完美還原】動態切換紙張版型與預覽列印系統
+// ============================================================================
+window.applyPrintStyle = function(size, layout) {
+    let styleNode = document.getElementById('dynamicPrintStyle');
+    if (!styleNode) {
+        styleNode = document.createElement('style');
+        styleNode.id = 'dynamicPrintStyle';
+        document.head.appendChild(styleNode);
+    }
+    styleNode.innerHTML = `
+    @media print { 
+        @page { size: ${size} ${layout}; margin: 0mm; } 
+        body { background: #fff !important; padding-top: 0 !important; } 
+        #printControlBar { display: none !important; }
+        .preview-paper { box-shadow: none !important; margin: 0 !important; max-width: none !important; }
+    }`;
+};
+
+window.showPrintPreview = function(areaId) {
+    document.getElementById('mainApp').style.display = 'none';
+    document.getElementById('homeMenu').style.display = 'none';
+    
+    document.getElementById('printArea').style.display = 'none';
+    document.getElementById('printPoArea').style.display = 'none';
+    document.getElementById('printQuoteArea').style.display = 'none';
+    document.getElementById('printArea').classList.remove('print-active');
+    document.getElementById('printPoArea').classList.remove('print-active');
+    document.getElementById('printQuoteArea').classList.remove('print-active');
+    
+    const targetArea = document.getElementById(areaId);
+    targetArea.style.display = 'block';
+    targetArea.classList.add('print-active');
+    
+    let controlBar = document.getElementById('printControlBar');
+    if (!controlBar) {
+        controlBar = document.createElement('div');
+        controlBar.id = 'printControlBar';
+        controlBar.className = 'd-flex justify-content-center p-3 position-fixed w-100 top-0 d-print-none';
+        controlBar.style.cssText = 'z-index: 10500; left: 0; background-color: #343a40; box-shadow: 0 4px 6px rgba(0,0,0,0.3);';
+        controlBar.innerHTML = `
+            <button onclick="window.print()" class="btn btn-primary fw-bold px-4 py-2 me-3 fs-5 shadow-sm">🖨️ 確認呼叫印表機</button>
+            <button onclick="closePrintPreview()" class="btn btn-danger fw-bold px-4 py-2 fs-5 shadow-sm">❌ 關閉預覽並返回</button>
+        `;
+        document.body.appendChild(controlBar);
+    }
+    controlBar.style.display = 'flex';
+    document.body.style.backgroundColor = '#2c3034';
+    document.body.style.paddingTop = '80px'; 
+    window.scrollTo(0,0);
+};
+
+window.closePrintPreview = function() {
+    let controlBar = document.getElementById('printControlBar');
+    if(controlBar) controlBar.style.display = 'none';
+    
+    document.body.style.paddingTop = '0px';
+    document.body.style.backgroundColor = ''; 
+    
+    document.getElementById('printArea').style.display = 'none';
+    document.getElementById('printPoArea').style.display = 'none';
+    document.getElementById('printQuoteArea').style.display = 'none';
+    document.getElementById('printArea').classList.remove('print-active');
+    document.getElementById('printPoArea').classList.remove('print-active');
+    document.getElementById('printQuoteArea').classList.remove('print-active');
+    
+    document.getElementById('mainApp').style.display = 'block';
+};
+
+// ============================================================================
 // 拖曳排序 (Drag & Drop) 邏輯
 // ============================================================================
 let draggedRowId = null;
@@ -221,7 +378,7 @@ window.handleDragLeave = function(e) { e.currentTarget.style.borderTop = ''; };
 window.handleDrop = function(e, targetId, type) {
     e.stopPropagation(); e.currentTarget.style.borderTop = '';
     if (draggedRowId !== targetId && draggedType === type) {
-        let arr = type === 'order' ? currentOrderManualItems : currentInvoiceData.items;
+        let arr = type === 'order' ? currentOrderManualItems : (type === 'invoice' ? currentInvoiceData.items : currentQuoItems);
         let fromIndex = arr.findIndex(x => x.id === draggedRowId);
         let toIndex = arr.findIndex(x => x.id === targetId);
         if (fromIndex >= 0 && toIndex >= 0) {
@@ -229,6 +386,7 @@ window.handleDrop = function(e, targetId, type) {
             arr.splice(toIndex, 0, movedItem);
             if (type === 'order' && typeof reRenderOrderManualItems === "function") reRenderOrderManualItems();
             if (type === 'invoice' && typeof reRenderInvoiceItems === "function") reRenderInvoiceItems();
+            if (type === 'quotation' && typeof reRenderQuotationItems === "function") reRenderQuotationItems(); 
         }
     }
     return false;
@@ -287,6 +445,7 @@ window.initSystemData = function() {
     callApi('getInitData', {}).then(res => {
         clearInterval(intv); setProgress(100, '✅ 準備完成！');
         globalClients = res.clients || []; globalSuppliers = res.suppliers || []; globalCatalog = res.catalog || []; globalHistory = res.history || []; globalOrders = res.orders || []; globalInventory = res.inventory || []; globalSalesDetails = res.salesDetails || []; globalInvLogs = res.invLogs || [];
+        globalQuotes = res.quotes || []; // 【補回】
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -317,6 +476,7 @@ window.refreshData = function() {
     showLoading("同步最新資料...");
     callApi('getInitData', {}).then(res => {
         globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
+        globalQuotes = res.quotes || []; // 【補回】
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -332,13 +492,17 @@ window.refreshData = function() {
         if(document.getElementById('sys-admin').style.display === 'block' && typeof window.renderAdminItems === "function") { window.renderAdminItems(); window.renderAdminClients(); }
         if(document.getElementById('sys-order').style.display === 'block' && typeof window.renderOrderList === "function") window.renderOrderList();
         if(document.getElementById('sys-inventory').style.display === 'block' && typeof window.renderInventory === "function") { window.renderInventory(); window.renderInvLogs(); renderShipments(); }
+        if(document.getElementById('sys-quotation').style.display === 'block' && typeof window.renderQuotationList === "function") window.renderQuotationList(); // 【補回】
     }).catch(err => { hideLoading(); alert("同步失敗：" + err.message); });
 };
 
 window.enterSystem = function(modId) {
     document.getElementById('homeMenu').style.display = 'none'; document.getElementById('mainApp').style.display = 'block';
     document.querySelectorAll('.sys-module').forEach(el => el.style.display = 'none'); document.getElementById(`sys-${modId}`).style.display = 'block';
-    const titles = {'order':'📦 訂單辨識建檔', 'invoice':'📝 開立發票', 'inventory': '🏭 產品庫存管理', 'history':'📊 紀錄與報表', 'admin':'⚙️ 管理員後台'}; 
+    
+    // 【補回】加入估價單標題對應
+    const titles = {'order':'📦 訂單辨識建檔', 'invoice':'📝 開立發票', 'inventory': '🏭 產品庫存管理', 'history':'📊 紀錄與報表', 'admin':'⚙️ 管理員後台', 'quotation': '📑 開立估價單'}; 
+    
     if(document.getElementById('sysTitle')) document.getElementById('sysTitle').innerText = titles[modId]; 
     document.getElementById('mainApp').scrollTo(0,0);
     
@@ -346,6 +510,7 @@ window.enterSystem = function(modId) {
     if(modId === 'admin' && typeof window.renderAdminItems === "function") { window.renderAdminItems(); window.renderAdminClients(); }
     if(modId === 'order' && typeof window.renderOrderList === "function") window.renderOrderList();
     if(modId === 'inventory' && typeof window.renderInventory === "function") { window.renderInventory(); window.renderInvLogs(); renderShipments(); }
+    if(modId === 'quotation' && typeof window.renderQuotationList === "function") window.renderQuotationList(); // 【補回】
 };
 
 window.backToHome = function() { document.getElementById('mainApp').style.display = 'none'; document.getElementById('homeMenu').style.display = 'block'; };
