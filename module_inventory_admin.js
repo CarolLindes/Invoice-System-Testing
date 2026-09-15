@@ -7,7 +7,6 @@
 // ============================================================================
 // 庫存管理與異動模組
 // ============================================================================
-// 【修復】補回遺失的異動清單下拉選單函數，並加入空值防護
 window.populateLogDropdowns = function() { 
     const names = [...new Set(globalInvLogs.map(l => l.name || '').filter(x => x))].sort(); 
     const filterEl = document.getElementById('logFilterName');
@@ -30,7 +29,6 @@ window.triggerSyncAssetCodes = function() {
 };
 
 window.renderInventory = debounce(function() {
-    // 【修復】加上空值防護 (|| '')，防止 toLowerCase() 崩潰
     const term = (document.getElementById('stkSearch').value || '').toLowerCase(); 
     let arr = globalInventory; 
     
@@ -84,7 +82,6 @@ window.renderInvLogs = debounce(function() {
     const fStart = document.getElementById('logFilterStart').value; 
     const fEnd = document.getElementById('logFilterEnd').value; 
     const fName = document.getElementById('logFilterName').value; 
-    // 【修復】加上空值防護
     const term = (document.getElementById('stkLogSearch').value || '').toLowerCase();
     
     let arr = globalInvLogs; 
@@ -93,7 +90,6 @@ window.renderInvLogs = debounce(function() {
     if(fEnd) { const endT = new Date(fEnd).setHours(23,59,59,999); arr = arr.filter(l => new Date(l.time).getTime() <= endT); }
     if(fName) arr = arr.filter(l => l.name === fName); 
     
-    // 【修復】全面空值防護，防止 toLowerCase 報錯
     if(term) {
         arr = arr.filter(l => 
             (l.name || '').toLowerCase().includes(term) || 
@@ -443,9 +439,9 @@ window.printPurchaseOrder = function(data) {
     const totalAmount = parseFloat(data.poQty) * parseFloat(data.poUnitPrice || 0);
     const dateStr = data.poDate ? data.poDate.replace(/-/g, '/') : getTodayStr().replace(/-/g, '/');
 
-    // 【排版優化保留】將訂單號碼從右側移到左側「客戶」正下方
+    // 【排版優化】加上 max-width: 800px 限制容器，解決網頁版無限拉長問題
     const html = `
-        <div style="padding: 0; width: 100%; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif;">
+        <div style="max-width: 800px; margin: 0 auto; background: #fff; padding: 20px; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000;">
             <div style="text-align: center; font-size: 26px; font-weight: 900; letter-spacing: 5px; margin-bottom: 10px; color: #000;">長固實業有限公司 - 訂貨單</div>
             
             <table style="width: 100%; border: none; margin-bottom: 15px; font-size: 14px; color: #000;">
@@ -455,7 +451,6 @@ window.printPurchaseOrder = function(data) {
                         <div style="margin-top: 5px;">電話: ${escapeQuotes(data.poSupPhone)}</div>
                         <div>傳真: ${escapeQuotes(data.poSupFax)}</div>
                         <div style="margin-top: 15px; color: #000; font-size: 18px; font-weight: bold;">客戶: ${escapeQuotes(data.poClientName)}</div>
-                        <!-- 訂單號碼移至此處 -->
                         <div style="margin-top: 5px; font-weight: bold; font-size: 15px; color: #d32f2f;">訂單號碼: ${escapeQuotes(data.poOrderNo || '無')}</div>
                     </td>
                     <td style="width: 50%; vertical-align: top; text-align: right; line-height: 1.6;">
@@ -562,7 +557,6 @@ window.populateAdminClientFilter = function() {
 };
 
 window.renderAdminClients = debounce(function() { 
-    // 【修復】加上空值防護
     const term = (document.getElementById('admClientSearch').value || '').toLowerCase(); 
     let arr = globalClients;
     if(term) {
@@ -624,7 +618,6 @@ window.submitEditClientOptimistic = function() {
 
 window.renderAdminItems = debounce(function() { 
     const f = document.getElementById('admItemFilterSelect').value; 
-    // 【修復】加上空值防護
     const t = (document.getElementById('admItemSearch').value || '').toLowerCase(); 
     let arr = globalCatalog; 
     
