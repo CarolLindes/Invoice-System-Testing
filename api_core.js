@@ -256,17 +256,32 @@ function silentRefreshData() {
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
-        if (typeof populateAdminClientFilter === "function") populateAdminClientFilter();
-        if (typeof updateHistoryDropdowns === "function") updateHistoryDropdowns();
-        if (typeof populateLogDropdowns === "function") populateLogDropdowns();
-        if (typeof updateOrderClientDropdown === "function") updateOrderClientDropdown();
-        if (typeof renderEmailSettings === "function") renderEmailSettings();
+        // 【修復】全面補齊全域前綴防護
+        if (typeof window.populateAdminClientFilter === "function") window.populateAdminClientFilter();
+        if (typeof window.updateHistoryDropdowns === "function") window.updateHistoryDropdowns();
+        if (typeof window.populateLogDropdowns === "function") window.populateLogDropdowns();
+        if (typeof window.updateOrderClientDropdown === "function") window.updateOrderClientDropdown();
+        if (typeof window.renderEmailSettings === "function") window.renderEmailSettings();
         
-        if(document.getElementById('sys-history').style.display === 'block' && typeof window.renderHistory === "function") { window.renderHistory(); generateReport(); }
-        if(document.getElementById('sys-admin').style.display === 'block' && typeof window.renderAdminItems === "function") { window.renderAdminItems(); window.renderAdminClients(); }
-        if(document.getElementById('sys-order').style.display === 'block' && typeof window.renderOrderList === "function") window.renderOrderList();
-        if(document.getElementById('sys-inventory').style.display === 'block' && typeof window.renderInventory === "function") { window.renderInventory(); window.renderInvLogs(); renderShipments(); }
-        if(document.getElementById('sys-quotation').style.display === 'block' && typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+        if(document.getElementById('sys-history') && document.getElementById('sys-history').style.display === 'block') { 
+            if (typeof window.renderHistory === "function") window.renderHistory(); 
+            if (typeof window.generateReport === "function") window.generateReport(); 
+        }
+        if(document.getElementById('sys-admin') && document.getElementById('sys-admin').style.display === 'block') { 
+            if (typeof window.renderAdminItems === "function") window.renderAdminItems(); 
+            if (typeof window.renderAdminClients === "function") window.renderAdminClients(); 
+        }
+        if(document.getElementById('sys-order') && document.getElementById('sys-order').style.display === 'block') {
+            if (typeof window.renderOrderList === "function") window.renderOrderList();
+        }
+        if(document.getElementById('sys-inventory') && document.getElementById('sys-inventory').style.display === 'block') { 
+            if (typeof window.renderInventory === "function") window.renderInventory(); 
+            if (typeof window.renderInvLogs === "function") window.renderInvLogs(); 
+            if (typeof window.renderShipments === "function") window.renderShipments(); // 【修復】
+        }
+        if(document.getElementById('sys-quotation') && document.getElementById('sys-quotation').style.display === 'block') {
+            if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+        }
     }).catch(err => console.log('背景默默同步失敗:', err));
 }
 
@@ -292,7 +307,7 @@ function debounce(func, delay = 300) {
 }
 
 // ============================================================================
-// 【全新優化】動態切換紙張版型與防擠壓預覽系統
+// 動態切換紙張版型與防擠壓預覽系統
 // ============================================================================
 window.applyPrintStyle = function(size, layout) {
     let styleNode = document.getElementById('dynamicPrintStyle');
@@ -303,7 +318,6 @@ window.applyPrintStyle = function(size, layout) {
     }
     
     styleNode.innerHTML = `
-    /* 手機/電腦的畫面預覽樣式：確保排版不被螢幕寬度擠壓變形 */
     @media screen {
         .print-active > div {
             min-width: 800px !important;
@@ -312,7 +326,6 @@ window.applyPrintStyle = function(size, layout) {
             box-shadow: 0 0 15px rgba(0,0,0,0.3);
         }
     }
-    /* 真實印表機列印樣式：隱藏按鈕、滿版輸出 */
     @media print { 
         @page { size: ${size} ${layout}; margin: 0mm; } 
         body { background: #fff !important; padding-top: 0 !important; } 
@@ -326,7 +339,6 @@ window.showPrintPreview = function(areaId) {
     document.getElementById('mainApp').style.display = 'none';
     document.getElementById('homeMenu').style.display = 'none';
     
-    // 初始化所有列印區塊
     ['printArea', 'printPoArea', 'printQuoteArea'].forEach(id => {
         const el = document.getElementById(id);
         if(el) {
@@ -339,7 +351,6 @@ window.showPrintPreview = function(areaId) {
     targetArea.style.display = 'block';
     targetArea.classList.add('print-active');
     
-    // 【手機端防擠壓】加入允許水平滑動的外層容器設定
     targetArea.style.width = '100%';
     targetArea.style.overflowX = 'auto';
     targetArea.style.padding = '20px 0';
@@ -365,7 +376,7 @@ window.showPrintPreview = function(areaId) {
 
 window.closePrintPreview = function() {
     let controlBar = document.getElementById('printControlBar');
-    if(controlBar) controlBar.remove(); // 【修復】徹底從節點中刪除，防止卡死
+    if(controlBar) controlBar.remove(); 
     
     document.body.style.paddingTop = '0px';
     document.body.style.backgroundColor = ''; 
@@ -409,9 +420,9 @@ window.handleDrop = function(e, targetId, type) {
         if (fromIndex >= 0 && toIndex >= 0) {
             const [movedItem] = arr.splice(fromIndex, 1);
             arr.splice(toIndex, 0, movedItem);
-            if (type === 'order' && typeof reRenderOrderManualItems === "function") reRenderOrderManualItems();
-            if (type === 'invoice' && typeof reRenderInvoiceItems === "function") reRenderInvoiceItems();
-            if (type === 'quotation' && typeof reRenderQuotationItems === "function") reRenderQuotationItems(); 
+            if (type === 'order' && typeof window.reRenderOrderManualItems === "function") window.reRenderOrderManualItems();
+            if (type === 'invoice' && typeof window.reRenderInvoiceItems === "function") window.reRenderInvoiceItems();
+            if (type === 'quotation' && typeof window.reRenderQuotationItems === "function") window.reRenderQuotationItems(); 
         }
     }
     return false;
@@ -474,11 +485,11 @@ window.initSystemData = function() {
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
-        if (typeof populateAdminClientFilter === "function") populateAdminClientFilter();
-        if (typeof updateHistoryDropdowns === "function") updateHistoryDropdowns();
-        if (typeof populateLogDropdowns === "function") populateLogDropdowns();
-        if (typeof updateOrderClientDropdown === "function") updateOrderClientDropdown();
-        if (typeof renderEmailSettings === "function") renderEmailSettings();
+        if (typeof window.populateAdminClientFilter === "function") window.populateAdminClientFilter();
+        if (typeof window.updateHistoryDropdowns === "function") window.updateHistoryDropdowns();
+        if (typeof window.populateLogDropdowns === "function") window.populateLogDropdowns();
+        if (typeof window.updateOrderClientDropdown === "function") window.updateOrderClientDropdown();
+        if (typeof window.renderEmailSettings === "function") window.renderEmailSettings();
         
         if(document.getElementById('mqMonthCount')) document.getElementById('mqMonthCount').innerText = `🧾 本月已開立 ${res.monthCount} 張`; 
         let daysLeft = Math.ceil((parseInt(localStorage.getItem('invTokenExp')) - Date.now()) / 86400000); 
@@ -505,19 +516,33 @@ window.refreshData = function() {
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
-        if (typeof populateAdminClientFilter === "function") populateAdminClientFilter();
-        if (typeof updateHistoryDropdowns === "function") updateHistoryDropdowns();
-        if (typeof populateLogDropdowns === "function") populateLogDropdowns();
-        if (typeof updateOrderClientDropdown === "function") updateOrderClientDropdown();
-        if (typeof renderEmailSettings === "function") renderEmailSettings();
+        if (typeof window.populateAdminClientFilter === "function") window.populateAdminClientFilter();
+        if (typeof window.updateHistoryDropdowns === "function") window.updateHistoryDropdowns();
+        if (typeof window.populateLogDropdowns === "function") window.populateLogDropdowns();
+        if (typeof window.updateOrderClientDropdown === "function") window.updateOrderClientDropdown();
+        if (typeof window.renderEmailSettings === "function") window.renderEmailSettings();
         
         hideLoading(); showToast('✅ 已同步');
         
-        if(document.getElementById('sys-history').style.display === 'block' && typeof window.renderHistory === "function") { window.renderHistory(); generateReport(); }
-        if(document.getElementById('sys-admin').style.display === 'block' && typeof window.renderAdminItems === "function") { window.renderAdminItems(); window.renderAdminClients(); }
-        if(document.getElementById('sys-order').style.display === 'block' && typeof window.renderOrderList === "function") window.renderOrderList();
-        if(document.getElementById('sys-inventory').style.display === 'block' && typeof window.renderInventory === "function") { window.renderInventory(); window.renderInvLogs(); renderShipments(); }
-        if(document.getElementById('sys-quotation').style.display === 'block' && typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+        if(document.getElementById('sys-history') && document.getElementById('sys-history').style.display === 'block') { 
+            if (typeof window.renderHistory === "function") window.renderHistory(); 
+            if (typeof window.generateReport === "function") window.generateReport(); 
+        }
+        if(document.getElementById('sys-admin') && document.getElementById('sys-admin').style.display === 'block') { 
+            if (typeof window.renderAdminItems === "function") window.renderAdminItems(); 
+            if (typeof window.renderAdminClients === "function") window.renderAdminClients(); 
+        }
+        if(document.getElementById('sys-order') && document.getElementById('sys-order').style.display === 'block') {
+            if (typeof window.renderOrderList === "function") window.renderOrderList();
+        }
+        if(document.getElementById('sys-inventory') && document.getElementById('sys-inventory').style.display === 'block') { 
+            if (typeof window.renderInventory === "function") window.renderInventory(); 
+            if (typeof window.renderInvLogs === "function") window.renderInvLogs(); 
+            if (typeof window.renderShipments === "function") window.renderShipments(); 
+        }
+        if(document.getElementById('sys-quotation') && document.getElementById('sys-quotation').style.display === 'block') {
+            if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+        }
     }).catch(err => { hideLoading(); alert("同步失敗：" + err.message); });
 };
 
@@ -530,11 +555,25 @@ window.enterSystem = function(modId) {
     if(document.getElementById('sysTitle')) document.getElementById('sysTitle').innerText = titles[modId]; 
     document.getElementById('mainApp').scrollTo(0,0);
     
-    if(modId === 'history' && typeof window.renderHistory === "function") { window.renderHistory(); generateReport(); }
-    if(modId === 'admin' && typeof window.renderAdminItems === "function") { window.renderAdminItems(); window.renderAdminClients(); }
-    if(modId === 'order' && typeof window.renderOrderList === "function") window.renderOrderList();
-    if(modId === 'inventory' && typeof window.renderInventory === "function") { window.renderInventory(); window.renderInvLogs(); renderShipments(); }
-    if(modId === 'quotation' && typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+    if(modId === 'history') { 
+        if (typeof window.renderHistory === "function") window.renderHistory(); 
+        if (typeof window.generateReport === "function") window.generateReport(); 
+    }
+    if(modId === 'admin') { 
+        if (typeof window.renderAdminItems === "function") window.renderAdminItems(); 
+        if (typeof window.renderAdminClients === "function") window.renderAdminClients(); 
+    }
+    if(modId === 'order') {
+        if (typeof window.renderOrderList === "function") window.renderOrderList();
+    }
+    if(modId === 'inventory') { 
+        if (typeof window.renderInventory === "function") window.renderInventory(); 
+        if (typeof window.renderInvLogs === "function") window.renderInvLogs(); 
+        if (typeof window.renderShipments === "function") window.renderShipments(); 
+    }
+    if(modId === 'quotation') {
+        if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+    }
 };
 
 window.backToHome = function() { document.getElementById('mainApp').style.display = 'none'; document.getElementById('homeMenu').style.display = 'block'; };
