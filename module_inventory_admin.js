@@ -1,666 +1,523 @@
 /**
  * ============================================================================
- * 模組 4：庫存、訂貨與管理員後台 (module_inventory_admin.js)
+ * 模組 5：開立估價單與動態列印 (module_quotation.js)
  * ============================================================================
  */
 
-// ============================================================================
-// 庫存管理與異動模組
-// ============================================================================
-window.triggerSyncAssetCodes = function() { 
-    showLoading("同步長固代號 / 資材碼中..."); 
-    callApi('syncAssetCodesToInventory', {}).then(res => { 
-        hideLoading(); 
-        if(res.success) { 
-            showToast(`✅ 同步完成！共更新了 ${res.count} 筆資料。`); 
-            refreshData(); 
-        } else { 
-            alert(res.msg); 
-        } 
-    }).catch(err => { hideLoading(); alert("同步失敗：" + err.message); }); 
-};
-
-window.renderInventory = debounce(function() {
-    const term = document.getElementById('stkSearch').value.toLowerCase(); 
-    let arr = globalInventory; 
-    if(term) arr = arr.filter(v => v.name.toLowerCase().includes(term) || v.supplier.toLowerCase().includes(term) || String(v.internalCode).toLowerCase().includes(term));
+window.renderQuotationList = debounce(function() {
+    const searchTerm = document.getElementById('quoSearchInput').value.toLowerCase();
     
-    let totalVal = 0; let alertCount = 0; 
-    globalInventory.forEach(v => { 
-        totalVal += (v.qty * v.cost); 
-        if(v.qty <= v.alertQty) alertCount++; 
-    });
-    
-    document.getElementById('stkTotalValue').innerText = `$${totalVal.toLocaleString()}`; 
-    document.getElementById('stkAlertCount').innerText = `${alertCount} 項`;
-    
-    const c = document.getElementById('stkListContainer'); 
-    if(arr.length === 0) return c.innerHTML = '<div class="text-center text-muted py-4">無庫存資料</div>';
-    
-    c.innerHTML = arr.map(v => {
-        let dot = 'stock-g'; let alertHTML = ''; 
-        if (v.qty <= 0) dot = 'stock-r'; 
-        else if (v.qty <= v.alertQty) dot = 'stock-y';
-        
-        if (v.qty <= v.alertQty) alertHTML = `<div class="small text-danger fw-bold mt-1">⚠️ 低於安全庫存 (${v.alertQty})</div>`;
-        return `<div class="item-row bg-white shadow-sm">
-            <div class="d-flex justify-content-between align-items-start mb-2">
-                <div>
-                    <div class="fw-bold fs-6 text-dark"><span class="stock-dot ${dot}"></span>${v.name} <span class="badge bg-secondary ms-1">${v.internalCode||''}</span></div>
-                    <div class="small text-primary mt-1 fw-bold">對應資材碼: ${v.assetCodeCombined||'無'}</div>
-                    <div class="small text-muted mt-1">效期: ${v.expiry||'--'} | 批號: ${v.lot||'--'}</div>
-                    ${alertHTML}
-                </div>
-                <div class="text-end">
-                    <div class="fs-4 fw-bold ${dot==='stock-r'?'text-danger':(dot==='stock-y'?'text-warning':'text-success')}">${v.qty}</div>
-                    <div class="small text-muted">庫存數量</div>
-                </div>
-            </div>
-            <button class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="openAdjustModal('${escapeQuotes(v.name)}')">進貨 / 盤點</button>
-        </div>`;
-    }).join('');
-}, 300);
-
-window.renderInvLogs = debounce(function() {
-    const fIn = document.getElementById('logFilterIn').value; 
-    const fOut = document.getElementById('logFilterOut').value; 
-    const fStart = document.getElementById('logFilterStart').value; 
-    const fEnd = document.getElementById('logFilterEnd').value; 
-    const fName = document.getElementById('logFilterName').value; 
-    const term = document.getElementById('stkLogSearch').value.toLowerCase();
-    
-    let arr = globalInvLogs; 
-    if(fIn || fOut) arr = arr.filter(l => (fIn && l.type.includes(fIn)) || (fOut && l.type.includes(fOut)));
-    if(fStart) { const startT = new Date(fStart).setHours(0,0,0,0); arr = arr.filter(l => new Date(l.time).setHours(0,0,0,0) >= startT); }
-    if(fEnd) { const endT = new Date(fEnd).setHours(23,59,59,999); arr = arr.filter(l => new Date(l.time).getTime() <= endT); }
-    if(fName) arr = arr.filter(l => l.name === fName); 
-    if(term) arr = arr.filter(l => l.name.toLowerCase().includes(term) || l.staff.toLowerCase().includes(term) || l.memo.toLowerCase().includes(term) || String(l.invoiceNo).toLowerCase().includes(term) || String(l.orderNo).toLowerCase().includes(term));
-    
-    const c = document.getElementById('stkLogContainer'); 
-    if(arr.length === 0) return c.innerHTML = '<div class="text-center text-muted py-4">無符合條件的異動紀錄</div>';
-    
-    c.innerHTML = arr.map(l => {
-        const d = new Date(l.time); 
-        const dateStr = isNaN(d.getTime()) ? '' : `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; 
-        const isAdd = l.qtyChange > 0;
-        let extInfo = [];
-        if (l.invoiceNo) extInfo.push(`發票: ${l.invoiceNo}`);
-        if (l.orderNo) extInfo.push(`單號: ${l.orderNo}`);
-        if (l.arrivalDate) extInfo.push(`進貨日: ${l.arrivalDate}`);
-        let extHtml = extInfo.length > 0 ? `<div class="small text-primary fw-bold mt-1">${extInfo.join(' | ')}</div>` : '';
-        
-        let actionBtns = `<button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openEditInvLogModal(${l.rowIdx})">✏️ 編輯</button>`;
-        if (l.type === "向廠商訂貨" && l.snapshot) {
-            actionBtns = `<button class="btn btn-sm btn-outline-info fw-bold me-1 text-dark" onclick="reprintPurchaseOrderFast(${l.rowIdx})">🖨️ 列印訂貨單</button>` + actionBtns;
-        }
-
-        return `<div class="p-3 bg-white border rounded mb-2 shadow-sm d-flex justify-content-between align-items-center">
-            <div>
-                <div class="fw-bold text-dark">${l.name} <span class="badge ${isAdd?'bg-success':(l.qtyChange<0?'bg-danger':'bg-warning text-dark')}">${l.type}</span></div>
-                <div class="small text-muted mt-1">${dateStr} | ${l.staff}</div>
-                ${extHtml}
-                <div class="small text-secondary mt-1">${l.memo}</div>
-            </div>
-            <div class="text-end">
-                <div class="fs-5 fw-bold ${isAdd?'text-success':(l.qtyChange<0?'text-danger':'text-warning')}">${isAdd?'+':''}${l.qtyChange}</div>
-                <div class="small text-muted mb-2">結存: ${l.newQty}</div>
-                <div>${actionBtns}</div>
-            </div>
-        </div>`;
-    }).join('');
-}, 300);
-
-// ============================================================================
-// 異動紀錄編輯器
-// ============================================================================
-window.openEditInvLogModal = function(idx) {
-    const l = globalInvLogs.find(x => x.rowIdx === idx); 
-    if(!l) return;
-    document.getElementById('e_logRowIdx').value = idx;
-    document.getElementById('e_logInvoiceNo').value = l.invoiceNo || '';
-    document.getElementById('e_logArrivalDate').value = l.arrivalDate || '';
-    document.getElementById('e_logOrderNo').value = l.orderNo || '';
-    document.getElementById('e_logMemo').value = l.memo || '';
-    document.getElementById('e_logSnapshot').value = l.snapshot || '';
-    
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('editInvLogModal')).show();
-};
-
-window.saveEditInvLog = function() {
-    const idx = parseInt(document.getElementById('e_logRowIdx').value);
-    const invoiceNo = document.getElementById('e_logInvoiceNo').value.trim();
-    const arrivalDate = document.getElementById('e_logArrivalDate').value;
-    const orderNo = document.getElementById('e_logOrderNo').value.trim();
-    const memo = document.getElementById('e_logMemo').value.trim();
-    
-    const l = globalInvLogs.find(x => x.rowIdx === idx);
-    if(l) {
-        l.invoiceNo = invoiceNo; l.arrivalDate = arrivalDate; l.orderNo = orderNo; l.memo = memo;
+    let filtered = globalQuotes;
+    if (searchTerm) {
+        filtered = filtered.filter(q => 
+            q.client.toLowerCase().includes(searchTerm) || 
+            q.quoteNo.toLowerCase().includes(searchTerm) || 
+            q.jsonStr.toLowerCase().includes(searchTerm)
+        );
     }
-    
-    pushToSyncQueue('editInvLogRecord', { rowIdx: idx, invoiceNo, arrivalDate, orderNo, memo }, null);
-    window.renderInvLogs();
-    bootstrap.Modal.getInstance(document.getElementById('editInvLogModal')).hide();
-    showToast("💾 異動紀錄已更新");
-};
 
-// ============================================================================
-// 庫存進貨/盤點 (Adjust)
-// ============================================================================
-window.openAdjustModal = function(nameStr) {
-    document.getElementById('adjInvoiceNo').value = ''; 
-    document.getElementById('adjArrivalDate').value = getTodayStr(); 
-    
-    if(nameStr) { 
-        const v = globalInventory.find(x => x.name === nameStr); 
-        document.getElementById('adjRowIdx').value = v.rowIdx; 
-        document.getElementById('adjName').value = v.name; 
-        document.getElementById('adjName').onclick = null; 
-        document.getElementById('adjName').classList.remove('fake-input-btn'); 
-        document.getElementById('adjInternalCode').value = v.internalCode || ''; 
-        document.getElementById('adjAlert').value = v.alertQty; 
-        document.getElementById('adjCost').value = v.cost; 
-        document.getElementById('adjSup').value = v.supplier; 
-    } else { 
-        document.getElementById('adjRowIdx').value = ''; 
-        document.getElementById('adjName').value = ''; 
-        document.getElementById('adjName').onclick = () => openSearchModal('item_adj', selectProductForAdj); 
-        document.getElementById('adjName').classList.add('fake-input-btn'); 
-        document.getElementById('adjInternalCode').value = ''; 
-        document.getElementById('adjAlert').value = '10'; 
-        document.getElementById('adjCost').value = '0'; 
-        document.getElementById('adjSup').value = ''; 
-    }
-    document.getElementById('adjQty').value = ''; 
-    document.getElementById('adjLot').value = ''; 
-    document.getElementById('adjExp').value = ''; 
-    document.getElementById('adjMemo').value = ''; 
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('adjInvModal')).show();
-};
+    let pending = filtered.filter(q => q.status === '待確認');
+    let verified = filtered.filter(q => q.status !== '待確認');
 
-window.selectProductForAdj = function(val) { 
-    document.getElementById('adjName').value = val; 
-    const p = globalCatalog.find(x => x.productName === val); 
-    if(p) {
-        let intCode = p.internalCode || p.assetCode || '';
-        document.getElementById('adjInternalCode').value = intCode;
-        if (intCode) {
-            const parts = intCode.split('-');
-            if (parts.length > 1) {
-                const supCodeMatch = parts[1];
-                const s = globalSuppliers.find(x => x.code === supCodeMatch);
-                if (s) document.getElementById('adjSup').value = s.name;
-            }
-        }
-    } 
-};
-
-window.saveInventoryAdjust = function() {
-    const idx = document.getElementById('adjRowIdx').value; 
-    const name = document.getElementById('adjName').value.trim(); 
-    const internalCode = document.getElementById('adjInternalCode').value.trim(); 
-    const changeQty = parseFloat(document.getElementById('adjQty').value); 
-    const alertQty = parseFloat(document.getElementById('adjAlert').value) || 0; 
-    const cost = parseFloat(document.getElementById('adjCost').value) || 0; 
-    const sup = document.getElementById('adjSup').value.trim(); 
-    const lot = document.getElementById('adjLot').value.trim(); 
-    const exp = document.getElementById('adjExp').value; 
-    const type = document.getElementById('adjType').value; 
-    const memo = document.getElementById('adjMemo').value.trim();
-    const invoiceNo = document.getElementById('adjInvoiceNo').value.trim(); 
-    const arrivalDate = document.getElementById('adjArrivalDate').value;
-    
-    if(!name || isNaN(changeQty) || changeQty === 0) return alert("請選定品名並輸入非零異動數量");
-    const payload = { name: name, internalCode: internalCode, changeQty: changeQty, alertQty: alertQty, cost: cost, supplier: sup, lot: lot, expiry: exp, type: type, memo: memo, invoiceNo: invoiceNo, arrivalDate: arrivalDate, staff: myName };
-    
-    if(idx) { 
-        const v = globalInventory.find(x => x.rowIdx === parseInt(idx)); 
-        if(v) { v.qty += changeQty; v.alertQty = alertQty; v.cost = cost; v.supplier = sup; if(lot) v.lot=lot; if(exp) v.expiry=exp; if(internalCode) v.internalCode=internalCode; } 
-    } else { 
-        globalInventory.push({rowIdx: Date.now(), name: name, internalCode: internalCode, qty: changeQty, alertQty: alertQty, cost: cost, supplier: sup, lot: lot, expiry: exp}); 
-    }
-    
-    globalInvLogs.unshift({time: Date.now(), staff: myName, name: name, type: type, qtyChange: changeQty, newQty: idx ? globalInventory.find(x => x.rowIdx === parseInt(idx)).qty : changeQty, invoiceNo: invoiceNo, arrivalDate: arrivalDate, memo: memo});
-    populateLogDropdowns(); 
-    window.renderInventory(); 
-    window.renderInvLogs(); 
-    bootstrap.Modal.getInstance(document.getElementById('adjInvModal')).hide(); 
-    pushToSyncQueue('adjustInventory', payload, null);
-};
-
-// ============================================================================
-// 欠貨出貨與向廠商訂貨 (PO) 模組
-// ============================================================================
-window.renderShipments = function() {
-    const c = document.getElementById('stkShipContainer'); 
-    const pending = globalSalesDetails.filter(s => s.shipStatus !== '已結案' && s.shipStatus !== '作廢');
-    if(pending.length === 0) return c.innerHTML = '<div class="text-center text-muted py-4">✅ 所有已開立發票之品項皆已全數出貨完畢</div>';
-    
-    c.innerHTML = pending.map(s => {
-        let remain = s.qty - s.shippedQty;
-        return `<div class="item-row bg-white shadow-sm mb-2">
-            <div class="d-flex justify-content-between mb-2">
-                <div><div class="fw-bold text-dark fs-6">${s.name}</div><div class="small text-muted mt-1">${s.client} | 發票: ${s.paperNo}</div></div>
-                <div>
-                    <button class="btn btn-sm btn-outline-warning text-dark fw-bold me-1" onclick="openPurchaseOrderModal(${s.rowIdx})">🛒 訂貨</button>
-                    <button class="btn btn-sm btn-primary fw-bold" onclick="openShipModal(${s.rowIdx})">📦 出貨</button>
-                </div>
-            </div>
-            <div class="d-flex gap-3 small"><span class="text-secondary">總訂購: ${s.qty}</span><span class="text-success">已出: ${s.shippedQty}</span><span class="text-danger fw-bold">欠貨: ${remain}</span></div>
-        </div>`;
-    }).join('');
-};
-
-window.openShipModal = function(rowIdx) {
-    const s = globalSalesDetails.find(x => x.rowIdx === rowIdx); if(!s) return;
-    document.getElementById('shipRowIdx').value = rowIdx; 
-    document.getElementById('shipItemName').innerText = s.name; 
-    document.getElementById('shipTotalQty').innerText = s.qty; 
-    document.getElementById('shipDoneQty').innerText = s.shippedQty;
-    const remain = s.qty - s.shippedQty; 
-    document.getElementById('shipRemainQty').innerText = remain; 
-    document.getElementById('shipNowQty').value = remain; 
-    document.getElementById('shipNowQty').max = remain;
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('shipModal')).show();
-};
-
-window.confirmShipment = function() {
-    const rowIdx = parseInt(document.getElementById('shipRowIdx').value); 
-    const qty = parseFloat(document.getElementById('shipNowQty').value);
-    
-    if(isNaN(qty) || qty <= 0) return alert("數量錯誤"); 
-    const s = globalSalesDetails.find(x => x.rowIdx === rowIdx); if(!s) return; 
-    if(qty > (s.qty - s.shippedQty)) return alert("出貨量不可大於欠貨量");
-    
-    s.shippedQty += qty; 
-    if(s.shippedQty >= s.qty) s.shipStatus = '已結案'; else s.shipStatus = '部分出貨';
-    
-    let inv = globalInventory.find(x => x.name === s.name); 
-    if (inv) inv.qty -= qty; 
-    else globalInventory.push({rowIdx:0, name: s.name, qty: -qty, alertQty: 0, cost: 0, supplier: '', internalCode: '', lot: '', expiry: ''});
-    
-    let currentInvQty = inv ? inv.qty : -qty; 
-    globalInvLogs.unshift({ time: Date.now(), staff: myName, name: s.name, type: '分批出貨', qtyChange: -qty, newQty: currentInvQty, orderNo: s.paperNo, memo: `單號: ${s.paperNo}` });
-    
-    populateLogDropdowns(); window.renderInvLogs(); window.renderInventory(); renderShipments(); 
-    bootstrap.Modal.getInstance(document.getElementById('shipModal')).hide(); 
-    pushToSyncQueue('updateShipment', {updates: [{rowIdx: rowIdx, paperNo: s.paperNo, name: s.name, shipQty: qty, totalQty: s.qty}], staff: myName}, null); 
-    showToast("🚚 出貨與庫存扣抵完成");
-};
-
-// 【修復】確認向廠商訂購模組全域可用
-window.openPurchaseOrderModal = function(salesRowIdx) {
-    const s = globalSalesDetails.find(x => x.rowIdx === salesRowIdx); if(!s) return;
-    
-    document.getElementById('poDate').value = getTodayStr();
-    document.getElementById('poSupplier').value = '';
-    document.getElementById('poSupPhone').value = '';
-    document.getElementById('poSupFax').value = '';
-    document.getElementById('poMemo').value = '';
-    
-    document.getElementById('poItemName').value = s.name;
-    document.getElementById('poClientName').value = s.client;
-    document.getElementById('poOrderNo').value = s.orderNo || '';
-    
-    const remainQty = s.qty - s.shippedQty;
-    document.getElementById('poQty').value = remainQty;
-
-    const p = globalCatalog.find(x => x.clientName === s.client && x.productName === s.name);
-    let intCode = '';
-    if (p) {
-        intCode = p.internalCode || p.assetCode || '';
-        document.getElementById('poInternalCode').value = intCode;
+    function buildQuoHtml(dataArr, isPendingTab) {
+        if(dataArr.length === 0) return '<div class="text-center text-muted py-4">目前沒有資料</div>';
         
-        let inv = globalInventory.find(x => x.name === s.name);
-        document.getElementById('poUnitPrice').value = inv ? (inv.cost || 0) : 0;
+        let groups = {};
+        dataArr.forEach(q => {
+            let gid = q.mergeId || `Single_${q.rowIdx}`;
+            if (!groups[gid]) groups[gid] = { isMerged: !!q.mergeId, client: q.client, quotes: [] };
+            groups[gid].quotes.push(q);
+        });
 
-        if (intCode) {
-            const parts = intCode.split('-');
-            if (parts.length > 1) {
-                const supCodeMatch = parts[1];
-                const supplier = globalSuppliers.find(x => x.code === supCodeMatch);
-                if (supplier) {
-                    document.getElementById('poSupplier').value = supplier.name || '';
-                    document.getElementById('poSupPhone').value = supplier.phone || '';
-                    document.getElementById('poSupFax').value = supplier.fax || '';
+        let html = '';
+        for (let gid in groups) {
+            const group = groups[gid];
+            const isMerged = group.isMerged;
+            
+            let titleHtml = `<div class="fw-bold text-dark fs-6">${group.client} ${isMerged ? '<span class="badge bg-primary ms-2">🔗 已合併</span>' : ''}</div>`;
+            
+            let allItemsDesc = group.quotes.map(q => {
+                let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+                let itemsStr = items.map(i => `<div>${i.name} <span class="badge bg-light text-dark border ms-1">x${i.qty}</span></div>`).join('');
+                return `<div class="mt-2 pt-2 border-top">
+                            <span class="small fw-bold text-secondary">單號: ${q.quoteNo} (${q.quoteDate})</span>
+                            <div class="small text-muted mt-1">${itemsStr}</div>
+                        </div>`;
+            }).join('');
+
+            let actionBtns = '';
+            if (isPendingTab) {
+                actionBtns += `<button class="btn btn-sm btn-outline-info fw-bold me-1 text-dark" onclick="printQuotation('${gid}')">🖨️ 列印出單</button>`;
+                actionBtns += `<button class="btn btn-sm btn-outline-danger fw-bold me-1" onclick="voidQuotation('${gid}')">🗑️ 作廢</button>`;
+                if (!isMerged) {
+                    actionBtns += `<button class="btn btn-sm btn-outline-secondary fw-bold me-1" onclick="openQuotationModal(${group.quotes[0].rowIdx})">📝 編輯</button>`;
                 }
+                actionBtns += `<button class="btn btn-sm btn-success fw-bold text-white shadow-sm" onclick="verifyQuotationToInvoice('${gid}')">✅ 核銷轉發票</button>`;
+            } else {
+                let statusBadge = '';
+                if(group.quotes[0].status === '已核銷') statusBadge = '<span class="badge bg-success">已核銷</span>';
+                else if(group.quotes[0].status === '已作廢') statusBadge = '<span class="badge bg-danger">已作廢</span>';
+                actionBtns += statusBadge;
             }
+
+            let checkboxHtml = '';
+            if (isPendingTab) {
+                const val = isMerged ? `M_${gid}` : `S_${group.quotes[0].rowIdx}`;
+                checkboxHtml = `<input class="form-check-input me-3 cb-quo" type="checkbox" value="${val}" data-client="${escapeQuotes(group.client)}" style="transform: scale(1.3); flex-shrink: 0;">`;
+            }
+
+            html += `<div class="item-row bg-white shadow-sm p-3 mb-3 ${isMerged ? 'border-primary' : ''}">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div class="d-flex align-items-center">
+                        ${checkboxHtml}
+                        ${titleHtml}
+                    </div>
+                    <div>${actionBtns}</div>
+                </div>
+                ${allItemsDesc}
+            </div>`;
         }
+        return html;
     }
 
-    const cObj = globalClients.find(x => x.name === s.client);
-    document.getElementById('poAddress').value = cObj ? (cObj.address || '') : '';
+    document.getElementById('quoPendingListContainer').innerHTML = buildQuoHtml(pending, true);
+    document.getElementById('quoVerifiedListContainer').innerHTML = buildQuoHtml(verified, false);
+
+}, 300);
+
+window.openQuotationModal = function(idx) {
+    currentQuoItems = [];
+    document.getElementById('e_quoMemo').value = '';
+    document.getElementById('e_quoUseSeal').checked = true;
+
+    if(idx) {
+        const q = globalQuotes.find(x => x.rowIdx === idx);
+        document.getElementById('e_quoRow').value = idx;
+        document.getElementById('e_quoDate').value = q.quoteDate;
+        document.getElementById('e_quoNo').value = q.quoteNo;
+        document.getElementById('e_quoClient').value = q.client;
+        document.getElementById('e_quoUseSeal').checked = q.useSeal;
+        document.getElementById('e_quoMemo').value = q.memo || ''; 
+        
+        let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+        items.forEach(i => {
+            const rowId = `quo_${Date.now()}_${Math.random().toString(36).substr(2,5)}`;
+            currentQuoItems.push({ id: rowId, name: i.name||'', price: i.price||0, qty: i.qty||1, unit: i.unit||'式', brandModel: i.brandModel||'', memo: i.memo||'', showBrand: !!i.brandModel });
+        });
+    } else {
+        document.getElementById('e_quoRow').value = '';
+        document.getElementById('e_quoDate').value = getTodayStr();
+        document.getElementById('e_quoNo').value = '';
+        document.getElementById('e_quoClient').value = '';
+        document.getElementById('e_quoMemo').value = '';
+        addQuotationManualItemRow();
+    }
+    reRenderQuotationItems();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('editQuoModal')).show();
+};
+
+window.addQuotationManualItemRow = function() {
+    const rowId = `quo_${Date.now()}_${Math.random().toString(36).substr(2,5)}`;
+    currentQuoItems.push({ id: rowId, name: '', price: 0, qty: 1, unit: '式', brandModel: '', memo: '', showBrand: false });
+    reRenderQuotationItems();
+};
+
+window.renderSingleQuotationItem = function(item) {
+    let subtotal = (parseFloat(item.price) || 0) * (parseFloat(item.qty) || 0);
     
-    const deptSelect = document.getElementById('poReceiveDept');
-    deptSelect.innerHTML = '';
-    if (cObj && cObj.receiveDept) {
-        const depts = cObj.receiveDept.split(/[,，\n]+/).map(str => str.trim()).filter(x => x);
-        if (depts.length > 0) {
-            deptSelect.innerHTML = depts.map(d => `<option value="${d}">${d}</option>`).join('');
+    return `<div class="item-row p-3 mb-2 bg-white border border-secondary shadow-sm draggable-row" id="${item.id}" draggable="true" ondragstart="handleDragStart(event, '${item.id}', 'quotation')" ondragover="handleDragOver(event)" ondrop="handleDrop(event, '${item.id}', 'quotation')" ondragenter="handleDragEnter(event)" ondragleave="handleDragLeave(event)">
+        <div class="drag-handle position-absolute" style="top:10px; left:10px; cursor:grab; font-size: 1.2rem; color: #adb5bd;" title="按住拖曳排序">☰</div>
+        <button class="btn btn-sm btn-outline-danger position-absolute" style="top:8px; right:8px;" onclick="removeQuotationItem('${item.id}')">✕</button>
+        
+        <div class="mb-2 pe-4 ps-4">
+            <label class="form-label small fw-bold text-muted mb-1">品名 <span class="text-danger">*</span></label>
+            <input type="text" class="form-control fake-input-btn form-control-sm fw-bold fs-6 border-primary" id="quo_name_${item.id}" value="${escapeQuotes(item.name)}" readonly placeholder="點此對應產品庫..." onclick="openSearchModal('item_quo_${item.id}', (val)=>selectProductForQuo('${item.id}', val))">
+        </div>
+        <div class="row g-2 ps-4 mb-2">
+            <div class="col-3"><label class="form-label small fw-bold text-muted mb-1">數量</label><input type="number" class="form-control form-control-sm fw-bold text-danger text-center" id="quo_qty_${item.id}" value="${item.qty}" min="0" step="any" oninput="updateQuoQty('${item.id}', this.value)"></div>
+            <div class="col-3"><label class="form-label small fw-bold text-muted mb-1">單位</label><input type="text" class="form-control form-control-sm text-center" id="quo_unit_${item.id}" value="${escapeQuotes(item.unit)}" oninput="updateQuoUnit('${item.id}', this.value)"></div>
+            <div class="col-3"><label class="form-label small fw-bold text-muted mb-1">單價(含稅)</label><input type="number" class="form-control form-control-sm text-end" id="quo_price_${item.id}" value="${item.price}" min="0" step="any" oninput="updateQuoPrice('${item.id}', this.value)"></div>
+            <div class="col-3"><label class="form-label small fw-bold text-muted mb-1">小計(含稅)</label><input type="text" class="form-control form-control-sm bg-light text-end fw-bold text-primary" value="$${Math.round(subtotal).toLocaleString()}" readonly></div>
+        </div>
+        <div class="row g-2 ps-4 align-items-end">
+            <div class="col-12">
+                <div class="form-check form-switch mb-1">
+                    <input class="form-check-input" type="checkbox" id="quo_showBrand_${item.id}" ${item.showBrand ? 'checked' : ''} onchange="toggleQuoBrand('${item.id}', this.checked)">
+                    <label class="form-check-label small fw-bold text-muted" for="quo_showBrand_${item.id}">需要填寫廠牌型號</label>
+                </div>
+                <div id="quo_brandBox_${item.id}" style="display: ${item.showBrand ? 'block' : 'none'};">
+                    <input type="text" class="form-control form-control-sm mb-2" placeholder="輸入廠牌型號..." value="${escapeQuotes(item.brandModel)}" oninput="updateQuoBrand('${item.id}', this.value)">
+                </div>
+            </div>
+            <div class="col-12"><label class="form-label small fw-bold text-muted mb-1">單項備註</label><input type="text" class="form-control form-control-sm text-secondary" placeholder="選填..." value="${escapeQuotes(item.memo)}" oninput="updateQuoMemo('${item.id}', this.value)"></div>
+        </div>
+    </div>`;
+};
+
+window.reRenderQuotationItems = function() { 
+    document.getElementById('e_quoItemsContainer').innerHTML = currentQuoItems.map(renderSingleQuotationItem).join(''); 
+};
+
+window.selectClientForQuotation = function(val) {
+    document.getElementById('e_quoClient').value = val;
+    currentQuoItems = [];
+    addQuotationManualItemRow();
+};
+
+window.selectProductForQuo = function(rowId, prodName) {
+    const client = document.getElementById('e_quoClient').value;
+    const p = globalCatalog.find(x => x.clientName === client && x.productName === prodName);
+    if(p) {
+        const item = currentQuoItems.find(x => x.id === rowId);
+        if(item) {
+            item.name = p.productName;
+            item.price = p.price || 0;
+            item.unit = p.unit || '式';
+        }
+        reRenderQuotationItems();
+    }
+};
+
+window.updateQuoQty = function(id, val) { const item = currentQuoItems.find(x=>x.id===id); if(item) { item.qty = Math.max(0, parseFloat(val)||0); reRenderQuotationItems(); } };
+window.updateQuoUnit = function(id, val) { const item = currentQuoItems.find(x=>x.id===id); if(item) { item.unit = val; } };
+window.updateQuoPrice = function(id, val) { const item = currentQuoItems.find(x=>x.id===id); if(item) { item.price = Math.max(0, parseFloat(val)||0); reRenderQuotationItems(); } };
+window.updateQuoBrand = function(id, val) { const item = currentQuoItems.find(x=>x.id===id); if(item) item.brandModel = val; };
+window.updateQuoMemo = function(id, val) { const item = currentQuoItems.find(x=>x.id===id); if(item) item.memo = val; };
+window.toggleQuoBrand = function(id, isChecked) { const item = currentQuoItems.find(x=>x.id===id); if(item) { item.showBrand = isChecked; reRenderQuotationItems(); } };
+window.removeQuotationItem = function(id) { currentQuoItems = currentQuoItems.filter(x=>x.id!==id); reRenderQuotationItems(); };
+
+window.saveEditQuotation = function() {
+    const idx = document.getElementById('e_quoRow').value;
+    const date = document.getElementById('e_quoDate').value;
+    const no = document.getElementById('e_quoNo').value.trim();
+    const client = document.getElementById('e_quoClient').value;
+    const useSeal = document.getElementById('e_quoUseSeal').checked;
+    const memo = document.getElementById('e_quoMemo').value.trim(); 
+    
+    if(!date || !no || !client) return alert("估價日期、編號與客戶名稱皆為必填！");
+    
+    let items = [];
+    for(let i of currentQuoItems) {
+        if(!i.name || i.qty <= 0) return alert("所有品項必須填寫名稱且數量需大於0！");
+        items.push({ name: i.name, qty: i.qty, unit: i.unit, price: i.price, brandModel: i.showBrand ? i.brandModel : '', memo: i.memo });
+    }
+    if(items.length === 0) return alert("請至少新增一項品項！");
+
+    const payload = { rowIdx: idx ? parseInt(idx) : null, quoteDate: date, quoteNo: no, clientName: client, useSeal: useSeal, items: items, status: '待確認', staff: myName, memo: memo };
+
+    if(idx) {
+        const q = globalQuotes.find(x => x.rowIdx === parseInt(idx));
+        if(q) { q.quoteDate=date; q.quoteNo=no; q.client=client; q.useSeal=useSeal; q.jsonStr=JSON.stringify(items); q.memo=memo; }
+    } else {
+        globalQuotes.unshift({ rowIdx: Date.now(), time: Date.now(), quoteNo: no, quoteDate: date, client: client, status: '待確認', jsonStr: JSON.stringify(items), useSeal: useSeal, mergeId: '', staff: myName, memo: memo });
+    }
+
+    pushToSyncQueue('saveQuotation', payload, null);
+    window.renderQuotationList();
+    bootstrap.Modal.getInstance(document.getElementById('editQuoModal')).hide();
+    showToast("💾 估價單已儲存");
+};
+
+window.groupMergeQuotations = function() {
+    const cbs = document.querySelectorAll('.cb-quo:checked');
+    if(cbs.length < 2) return alert('請至少勾選 2 筆估價單進行合併！');
+    
+    let client = ''; let valid = true; let idsToMerge = [];
+    cbs.forEach(cb => {
+        if(!client) client = cb.dataset.client; else if(client !== cb.dataset.client) valid = false;
+        const val = cb.value;
+        if(val.startsWith('M_')) {
+            const groupQuotes = globalQuotes.filter(q => q.mergeId === val.replace('M_',''));
+            idsToMerge.push(...groupQuotes.map(q => q.rowIdx));
         } else {
-            deptSelect.innerHTML = `<option value="">無資料</option>`;
+            idsToMerge.push(parseInt(val.replace('S_','')));
+        }
+    });
+
+    if(!valid) return alert('⚠️ 合併防呆：不可將「不同客戶」的估價單合併在一起！請重新勾選。');
+    const newMergeId = 'MG_' + Date.now() + '_' + Math.random().toString(36).substr(2,4);
+    
+    globalQuotes.forEach(q => { if(idsToMerge.includes(q.rowIdx)) q.mergeId = newMergeId; });
+    pushToSyncQueue('mergeQuotations', { rowIndices: idsToMerge, mergeId: newMergeId }, null);
+    window.renderQuotationList();
+    showToast("🔗 估價單已成功合併！");
+};
+
+window.groupUnmergeQuotations = function() {
+    const cbs = document.querySelectorAll('.cb-quo:checked');
+    if(cbs.length === 0) return alert('請先勾選已合併的估價單群組！');
+    
+    let idsToUnmerge = [];
+    cbs.forEach(cb => {
+        const val = cb.value;
+        if(val.startsWith('M_')) {
+            const groupQuotes = globalQuotes.filter(q => q.mergeId === val.replace('M_',''));
+            idsToUnmerge.push(...groupQuotes.map(q => q.rowIdx));
+        }
+    });
+
+    if(idsToUnmerge.length === 0) return showToast("勾選的皆為單筆估價單，不需解除合併。");
+    globalQuotes.forEach(q => { if(idsToUnmerge.includes(q.rowIdx)) q.mergeId = ''; });
+    pushToSyncQueue('unmergeQuotations', { rowIndices: idsToUnmerge }, null);
+    window.renderQuotationList();
+    showToast("✂️ 已解除合併拆分為單筆！");
+};
+
+let tempVoidGroupData = []; 
+
+window.voidQuotation = function(gid) {
+    const quotesInGroup = globalQuotes.filter(q => q.mergeId === gid || `Single_${q.rowIdx}` === gid);
+    if(quotesInGroup.length === 0) return;
+
+    let allItems = [];
+    quotesInGroup.forEach(q => {
+        let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+        items.forEach(i => { i.sourceRowIdx = q.rowIdx; i.sourceQuoteNo = q.quoteNo; allItems.push(i); });
+    });
+
+    if(allItems.length <= 1) {
+        if(confirm("確定要將此估價單作廢嗎？")) {
+            const ids = quotesInGroup.map(q => q.rowIdx);
+            quotesInGroup.forEach(q => q.status = '已作廢');
+            pushToSyncQueue('updateQuotationStatus', { rowIndices: ids, status: '已作廢' }, null);
+            window.renderQuotationList();
         }
     } else {
-        deptSelect.innerHTML = `<option value="">無資料</option>`;
+        tempVoidGroupData = quotesInGroup;
+        let html = allItems.map((item, idx) => {
+            return `<div class="form-check mb-2 p-2 border-bottom"><input class="form-check-input cb-void-item" type="checkbox" value="${idx}" id="cb_void_${idx}" style="transform: scale(1.3); margin-right: 10px;"><label class="form-check-label fw-bold" for="cb_void_${idx}">${item.name} <span class="badge bg-secondary ms-1">x${item.qty}</span><div class="small text-muted fw-normal mt-1">來源: ${item.sourceQuoteNo}</div></label></div>`;
+        }).join('');
+        document.getElementById('vq_itemsList').innerHTML = html;
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('voidQuoItemsModal')).show();
     }
-
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('purchaseOrderModal')).show();
 };
 
-window.confirmPurchaseOrder = function() {
-    const qty = parseFloat(document.getElementById('poQty').value);
-    if (isNaN(qty) || qty <= 0) return alert("請輸入正確的訂貨數量！");
-    
-    const snapData = {
-        poDate: document.getElementById('poDate').value,
-        poOrderNo: document.getElementById('poOrderNo').value,
-        poSupplier: document.getElementById('poSupplier').value,
-        poSupPhone: document.getElementById('poSupPhone').value,
-        poSupFax: document.getElementById('poSupFax').value,
-        poItemName: document.getElementById('poItemName').value,
-        poInternalCode: document.getElementById('poInternalCode').value,
-        poUnitPrice: document.getElementById('poUnitPrice').value,
-        poClientName: document.getElementById('poClientName').value,
-        poReceiveDept: document.getElementById('poReceiveDept').value,
-        poAddress: document.getElementById('poAddress').value,
-        poQty: qty,
-        poMemo: document.getElementById('poMemo').value
-    };
+window.confirmVoidQuotationItems = function() {
+    const cbs = document.querySelectorAll('.cb-void-item:checked');
+    if(cbs.length === 0) return alert('請至少勾選一項要作廢的品項！');
 
-    const payload = {
-        name: snapData.poItemName,
-        staff: myName,
-        orderNo: snapData.poOrderNo,
-        orderDate: snapData.poDate,
-        memo: snapData.poMemo,
-        snapshot: JSON.stringify(snapData) 
-    };
-
-    let inv = globalInventory.find(x => x.name === snapData.poItemName);
-    let currentQty = inv ? inv.qty : 0;
-    globalInvLogs.unshift({
-        rowIdx: Date.now(), 
-        time: Date.now(), 
-        staff: myName, 
-        name: snapData.poItemName, 
-        type: '向廠商訂貨', 
-        qtyChange: 0, 
-        newQty: currentQty, 
-        orderNo: snapData.poOrderNo,
-        arrivalDate: snapData.poDate, 
-        memo: snapData.poMemo,
-        snapshot: payload.snapshot
+    let allItems = [];
+    tempVoidGroupData.forEach(q => {
+        let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+        items.forEach(i => { i.sourceRowIdx = q.rowIdx; allItems.push(i); });
     });
 
-    pushToSyncQueue('submitPurchaseOrder', payload, null);
-    window.renderInvLogs();
-    bootstrap.Modal.getInstance(document.getElementById('purchaseOrderModal')).hide();
-    
-    showToast("🛒 訂貨單已記錄！即將列印...");
-    setTimeout(() => { printPurchaseOrder(snapData); }, 500);
-};
-
-// 【修復】徹底確保一鍵列印與生成訂貨單為全域可用
-window.reprintPurchaseOrderFast = function(idx) {
-    const l = globalInvLogs.find(x => x.rowIdx === idx);
-    if (!l || !l.snapshot) return alert("無快照可列印！");
-    try {
-        const snapData = JSON.parse(l.snapshot);
-        printPurchaseOrder(snapData);
-    } catch(e) {
-        alert("快照資料解析失敗");
+    if(cbs.length === allItems.length) {
+        const ids = tempVoidGroupData.map(q => q.rowIdx);
+        tempVoidGroupData.forEach(q => q.status = '已作廢');
+        pushToSyncQueue('updateQuotationStatus', { rowIndices: ids, status: '已作廢' }, null);
+        window.renderQuotationList();
+        bootstrap.Modal.getInstance(document.getElementById('voidQuoItemsModal')).hide();
+        return;
     }
+
+    let selectedIndices = Array.from(cbs).map(cb => parseInt(cb.value));
+    
+    tempVoidGroupData.forEach(q => {
+        let origItems = []; try { origItems = JSON.parse(q.jsonStr); } catch(e){}
+        let keepItems = []; let voidItems = [];
+        
+        origItems.forEach(oi => {
+            let matchIdx = allItems.findIndex(ai => ai.sourceRowIdx === q.rowIdx && ai.name === oi.name && ai.qty === oi.qty);
+            if(selectedIndices.includes(matchIdx)) {
+                voidItems.push(oi);
+                selectedIndices = selectedIndices.filter(x => x !== matchIdx);
+            } else { keepItems.push(oi); }
+        });
+
+        if(voidItems.length > 0) {
+            q.jsonStr = JSON.stringify(keepItems);
+            globalQuotes.unshift({ rowIdx: Date.now()+Math.random(), time: Date.now(), quoteNo: q.quoteNo+"-作廢", quoteDate: q.quoteDate, client: q.client, status: '已作廢', jsonStr: JSON.stringify(voidItems), useSeal: q.useSeal, mergeId: '', staff: myName, memo: q.memo });
+            
+            pushToSyncQueue('splitAndVoidQuotationItems', {
+                rowIdx: q.rowIdx, quoteNo: q.quoteNo, quoteDate: q.quoteDate, clientName: q.client, useSeal: q.useSeal, staff: myName, keepItems: keepItems, voidItems: voidItems
+            }, null);
+        }
+    });
+
+    window.renderQuotationList();
+    bootstrap.Modal.getInstance(document.getElementById('voidQuoItemsModal')).hide();
+    showToast("🗑️ 指定品項已成功拆分並作廢！");
 };
 
-window.printPurchaseOrder = function(data) {
-    const totalAmount = parseFloat(data.poQty) * parseFloat(data.poUnitPrice || 0);
-    const dateStr = data.poDate ? data.poDate.replace(/-/g, '/') : getTodayStr().replace(/-/g, '/');
+window.verifyQuotationToInvoice = function(gid) {
+    const quotesInGroup = globalQuotes.filter(q => q.mergeId === gid || `Single_${q.rowIdx}` === gid);
+    if(quotesInGroup.length === 0) return;
 
+    const clientName = quotesInGroup[0].client;
+    const cObj = globalClients.find(x => x.name === clientName);
+    const taxId = cObj ? cObj.taxId : '';
+    const quoteNos = quotesInGroup.map(q => q.quoteNo).join(', ');
+
+    enterSystem('invoice');
+    document.getElementById('invClientInput').value = clientName; 
+    currentInvoiceData.clientName = clientName; 
+    currentInvoiceData.taxId = taxId; 
+    document.getElementById('invClientInfo').innerText = `✓ 綁定成功 (統編: ${taxId||'無'})`; 
+    document.getElementById('invClientInfo').style.display = 'block'; 
+    document.getElementById('btnNext1').style.display = 'block'; 
+    document.getElementById('invOrderNo').value = `[估價單核銷]-${quoteNos}`;
+    currentInvoiceData.items = [];
+    document.getElementById('invAiNotice').style.display = 'block';
+    
+    quotesInGroup.forEach(q => {
+        let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+        items.forEach(i => {
+            const rowId = `invR_${Date.now()}_${Math.random().toString(36).substring(2)}`; 
+            const p = globalCatalog.find(x => x.clientName === clientName && x.productName === i.name);
+            let internalCode = p ? (p.internalCode || p.assetCode) : '';
+            let fullMemo = ((i.brandModel ? i.brandModel + ' ' : '') + (i.memo || '')).trim();
+
+            currentInvoiceData.items.push({ 
+                id: rowId, 
+                product: { productName: i.name, unit: i.unit, price: i.price, internalCode: internalCode }, 
+                qty: i.qty, orderRef: q.quoteNo, deptRef: fullMemo 
+            });
+        });
+    });
+
+    const ids = quotesInGroup.map(q => q.rowIdx);
+    quotesInGroup.forEach(q => q.status = '已核銷');
+    pushToSyncQueue('updateQuotationStatus', { rowIndices: ids, status: '已核銷' }, null);
+
+    if (typeof reRenderInvoiceItems === "function") reRenderInvoiceItems();
+    if (typeof goStep === "function") goStep(2); 
+    showToast("✅ 已將估價單品項全數載入發票系統！您可以自由刪減本次要開立的品項 (每張發票限5筆)。");
+};
+
+// ============================================================================
+// 【完美優化】列印估價單 (支援 A4 舒展排版、過濾日期、真實公司大小章)
+// ============================================================================
+window.printQuotation = function(gid) {
+    const quotesInGroup = globalQuotes.filter(q => q.mergeId === gid || `Single_${q.rowIdx}` === gid);
+    if (quotesInGroup.length === 0) return;
+
+    const clientName = quotesInGroup[0].client;
+    const quoteNos = quotesInGroup.map(q => q.quoteNo).join(', ');
+    
+    // (1) 日期純淨化過濾 (只保留 YYYY/MM/DD)
+    const rawDate = quotesInGroup[0].quoteDate || getTodayStr();
+    const dateStr = rawDate.split('T')[0].replace(/-/g, '/');
+    
+    const useSeal = quotesInGroup[0].useSeal;
+    
+    // 合併備註
+    const mainMemo = quotesInGroup.map(q => q.memo).filter(x => x).join(' / ');
+
+    // 取出品項
+    let allItems = [];
+    quotesInGroup.forEach(q => {
+        let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+        allItems.push(...items);
+    });
+
+    let totalAmount = 0;
+    
+    // 渲染表格內容
+    let tbodyHtml = allItems.map((item, idx) => {
+        const price = parseFloat(item.price) || 0;
+        const qty = parseFloat(item.qty) || 0;
+        const subtotal = Math.round(price * qty); 
+        totalAmount += subtotal;
+
+        let extDesc = [];
+        if (item.brandModel) extDesc.push(`廠牌型號: ${item.brandModel}`);
+        if (item.memo) extDesc.push(item.memo);
+        let descHtml = extDesc.length > 0 ? `<div style="font-size: 0.85em; color: #555; margin-top: 4px;">${escapeQuotes(extDesc.join(' | '))}</div>` : '';
+
+        return `
+            <tr>
+                <td style="border: 1px solid #000; padding: 12px; text-align: center;">${idx + 1}</td>
+                <td style="border: 1px solid #000; padding: 12px; text-align: left;">
+                    <div style="font-weight: bold;">${escapeQuotes(item.name)}</div>
+                    ${descHtml}
+                </td>
+                <td style="border: 1px solid #000; padding: 12px; text-align: center;">${qty}</td>
+                <td style="border: 1px solid #000; padding: 12px; text-align: center;">${escapeQuotes(item.unit)}</td>
+                <td style="border: 1px solid #000; padding: 12px; text-align: right;">$${price.toLocaleString()}</td>
+                <td style="border: 1px solid #000; padding: 12px; text-align: right; font-weight: bold;">$${subtotal.toLocaleString()}</td>
+            </tr>
+        `;
+    }).join('');
+
+    // (3) 完美替換真實大小章 (利用 mix-blend-mode 模擬印章蓋印效果)
+    const sealHtml = useSeal ? `
+        <div style="position: absolute; right: 50px; bottom: 10px; display: flex; align-items: flex-end; pointer-events: none; z-index: 10; opacity: 0.95;">
+            <!-- 大章 -->
+            <img src="https://drive.google.com/uc?export=view&id=1f6zlONs70zTGucx1h5ttJD1OLzyygXuu" alt="大章" style="width: 150px; height: auto; mix-blend-mode: multiply;">
+            <!-- 小章 (疊加在大章左下) -->
+            <img src="https://drive.google.com/uc?export=view&id=1AnqCPy5MbzXcEwsQFxHVBiS_pZB7AL6z" alt="小章" style="width: 55px; height: auto; mix-blend-mode: multiply; margin-left: -40px; margin-bottom: 10px;">
+        </div>
+    ` : '';
+
+    // (6) 完美的 A4 滿版舒展排版 (加入 flex-grow: 1 撐開間距)
     const html = `
-        <div style="padding: 0; width: 100%; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif;">
-            <div style="text-align: center; font-size: 26px; font-weight: 900; letter-spacing: 5px; margin-bottom: 10px; color: #000;">長固實業有限公司 - 訂貨單</div>
+        <div style="padding: 10mm 15mm; max-width: 800px; margin: 0 auto; position: relative; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000; background: #fff; box-sizing: border-box; min-height: 280mm; display: flex; flex-direction: column;">
             
-            <table style="width: 100%; border: none; margin-bottom: 15px; font-size: 14px; color: #000;">
-                <tr>
-                    <td style="width: 50%; vertical-align: top;">
-                        <div style="font-weight: bold; font-size: 16px;">TO: ${escapeQuotes(data.poSupplier)}</div>
-                        <div style="margin-top: 5px;">電話: ${escapeQuotes(data.poSupPhone)}</div>
-                        <div>傳真: ${escapeQuotes(data.poSupFax)}</div>
-                        <div style="margin-top: 10px; color: #000; font-size: 18px; font-weight: bold;">客戶: ${escapeQuotes(data.poClientName)}</div>
-                    </td>
-                    <td style="width: 50%; vertical-align: top; text-align: right; line-height: 1.6;">
-                        <div style="font-weight: bold;">訂貨日期: ${dateStr}</div>
-                        <div style="font-weight: bold; color: #d32f2f;">訂單號碼: ${escapeQuotes(data.poOrderNo || '無')}</div>
-                        <div style="margin-top: 5px;">統一編號: 86477073</div>
-                        <div>公司地址: 台中市西區中美街639號</div>
-                        <div>發票地址: 新北市三重區重新路5段609巷6號4樓</div>
-                        <div>電話: (04)23269591 &nbsp; FAX: (04)23268576</div>
-                    </td>
-                </tr>
-            </table>
+            <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 15px; margin-bottom: 30px;">
+                <h2 style="margin: 0; font-weight: 900; letter-spacing: 5px; font-size: 32px;">長固實業有限公司</h2>
+                <h3 style="margin: 15px 0 0 0; font-weight: bold; letter-spacing: 15px; font-size: 24px;">估價單</h3>
+            </div>
 
-            <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 15px; color: #000;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 16px; line-height: 1.8;">
+                <div style="width: 55%;">
+                    <div style="font-size: 20px; border-bottom: 1px solid #000; padding-bottom: 5px; margin-bottom: 15px;">
+                        <strong>客戶名稱：${escapeQuotes(clientName)}</strong>
+                        <!-- (2) 移除鈞鑒 -->
+                    </div>
+                    <div><strong>估價單號：</strong>${escapeQuotes(quoteNos)}</div>
+                    <div><strong>估價日期：</strong>${dateStr}</div>
+                </div>
+                <div style="width: 40%; text-align: right; font-size: 15px;">
+                    <div><strong>統一編號：</strong>86477073</div>
+                    <div><strong>公司地址：</strong>台中市西區中美街639號</div>
+                    <div><strong>聯絡電話：</strong>(04) 2326-9591</div>
+                    <div><strong>傳真號碼：</strong>(04) 2326-8576</div>
+                </div>
+            </div>
+
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 16px; border: 2px solid #000;">
                 <thead>
-                    <tr style="background-color: #f8f9fa;">
-                        <th style="border: 2px solid #000; padding: 10px; text-align: left;">長固代號 / 品名</th>
-                        <th style="border: 2px solid #000; padding: 10px; width: 80px; text-align: center;">數量</th>
-                        <th style="border: 2px solid #000; padding: 10px; width: 100px; text-align: right;">單價</th>
-                        <th style="border: 2px solid #000; padding: 10px; width: 120px; text-align: right;">總計</th>
+                    <tr style="background-color: #f1f3f5;">
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; width: 60px; text-align: center;">項次</th>
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; text-align: center;">品名及規格</th>
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; width: 70px; text-align: center;">數量</th>
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; width: 70px; text-align: center;">單位</th>
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; width: 120px; text-align: center;">單價(含稅)</th>
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; width: 130px; text-align: center;">總價(含稅)</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr>
-                        <td style="border: 1px solid #000; padding: 15px 10px; text-align: left;">
-                            <div style="font-weight: bold; margin-bottom: 5px;">${escapeQuotes(data.poInternalCode)}</div>
-                            <div>${escapeQuotes(data.poItemName)}</div>
-                        </td>
-                        <td style="border: 1px solid #000; padding: 15px 10px; text-align: center; font-size: 18px; font-weight: bold;">${data.poQty}</td>
-                        <td style="border: 1px solid #000; padding: 15px 10px; text-align: right;">${Number(data.poUnitPrice).toLocaleString()}</td>
-                        <td style="border: 1px solid #000; padding: 15px 10px; text-align: right; font-weight: bold;">${totalAmount.toLocaleString()}</td>
-                    </tr>
+                    ${tbodyHtml}
                 </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="5" style="border: 1px solid #000; padding: 15px; text-align: right; font-weight: bold; letter-spacing: 2px;">總金額 (含稅)</td>
+                        <!-- (5) 總金額改為黑字 -->
+                        <td style="border: 1px solid #000; padding: 15px; text-align: right; font-weight: bold; font-size: 18px; color: #000;">$${totalAmount.toLocaleString()}</td>
+                    </tr>
+                </tfoot>
             </table>
-            
-            <div style="margin-top: 15px; font-size: 14px; border: 1px solid #000; padding: 10px; background-color: #fcfcfc; color: #000;">
-                <div style="margin-bottom: 5px;"><strong>📍 送貨地點：</strong>${escapeQuotes(data.poAddress)}</div>
-                <div style="margin-bottom: 5px;"><strong>📦 收貨單位：</strong>${escapeQuotes(data.poReceiveDept)}</div>
-                <div><strong>📝 備註事項：</strong>${escapeQuotes(data.poMemo)}</div>
+
+            <!-- 利用 flex-grow 佔據剩餘空間，將備註往下推 -->
+            <div style="flex-grow: 1;"></div>
+
+            <div style="margin-top: 40px; font-size: 15px; border: 1px solid #000; padding: 20px; position: relative; min-height: 180px;">
+                <div style="font-weight: bold; margin-bottom: 10px; font-size: 16px;">備註事項：</div>
+                <div style="white-space: pre-wrap; line-height: 1.8;">${escapeQuotes(mainMemo) || '無'}</div>
+                ${sealHtml}
             </div>
+            
+            <!-- (4) 客戶簽章與業務經辦已移除 -->
         </div>
     `;
 
-    document.getElementById('printPoArea').innerHTML = html;
-    
-    // 切換列印模式
-    document.getElementById('printPoArea').classList.add('print-active');
-    if (document.getElementById('printArea')) document.getElementById('printArea').classList.remove('print-active');
-    
-    setTimeout(() => { window.print(); }, 300);
-};
-
-// ============================================================================
-// 管理員後台 (Admin) 模組
-// ============================================================================
-window.openSearchModal = function(type, callback) {
-    currentSearchCallback = callback; 
-    document.getElementById('searchModalList').innerHTML = ''; 
-    document.getElementById('searchModalInput').value = '';
-    
-    if(type === 'client' || type === 'admin_client' || type === 'client_ord') { 
-        document.getElementById('searchModalTitle').innerText = '選擇客戶'; 
-        currentSearchSource = globalClients.map(c => ({ text: c.name, sub: `統編: ${c.taxId||'無'}`, val: c.name })); 
+    const printQuoteArea = document.getElementById('printQuoteArea');
+    if (printQuoteArea) {
+        printQuoteArea.innerHTML = html;
+        if (typeof applyPrintStyle === 'function') applyPrintStyle('A4', 'portrait');
+        if (typeof showPrintPreview === 'function') showPrintPreview('printQuoteArea');
+    } else {
+        alert('系統錯誤：找不到估價單列印區塊');
     }
-    else if(type === 'item_adj') { 
-        document.getElementById('searchModalTitle').innerText = '選擇盤點品項'; 
-        const uniqueProds = [...new Map(globalCatalog.map(item => [item.productName, item])).values()]; 
-        currentSearchSource = uniqueProds.map((p, idx) => ({ text: p.productName, sub: `長固代號: ${p.internalCode||p.assetCode||'無'}`, val: p.productName, idx: idx, ref: p })); 
-    }
-    else if(type.startsWith('item_')) { 
-        document.getElementById('searchModalTitle').innerText = '選擇品項'; 
-        let clientName = ''; 
-        if(type.startsWith('item_ord_')) clientName = document.getElementById('e_ordClient').value; 
-        else clientName = document.getElementById('invClientInput').value; 
-        
-        if(!clientName) { alert('請先選擇客戶！'); return; } 
-        currentSearchSource = globalCatalog.filter(p => p.clientName === clientName).map((p, idx) => ({ text: p.productName, sub: `單價: $${p.price} / ${p.unit}`, val: p.productName, idx: idx, ref: p })); 
-    }
-    
-    renderSearchList(currentSearchSource); 
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('searchModal')).show(); 
-    setTimeout(()=> document.getElementById('searchModalInput').focus(), 500);
-};
-
-window.filterSearchModal = debounce(function() { 
-    const term = document.getElementById('searchModalInput').value.toLowerCase(); 
-    renderSearchList(currentSearchSource.filter(s => s.text.toLowerCase().includes(term) || (s.sub && s.sub.toLowerCase().includes(term)))); 
-}, 300);
-
-window.renderSearchList = function(arr) { 
-    document.getElementById('searchModalList').innerHTML = arr.map(item => `<button class="search-btn-item" onclick="onSearchSelect('${escapeQuotes(item.val)}')"><div class="d-flex justify-content-between align-items-center"><span>${item.text}</span><span class="badge bg-secondary">${item.sub}</span></div></button>`).join(''); 
-};
-
-window.onSearchSelect = function(val) { 
-    bootstrap.Modal.getInstance(document.getElementById('searchModal')).hide(); 
-    if(currentSearchCallback) currentSearchCallback(val); 
-};
-
-window.populateAdminClientFilter = function() { 
-    if(document.getElementById('admItemFilterSelect')) {
-        document.getElementById('admItemFilterSelect').innerHTML = '<option value="">📂 所有客戶 (顯示全部)</option>' + globalClients.map(c => `<option value="${c.name}">${c.name}</option>`).join(''); 
-    }
-};
-
-window.renderAdminClients = debounce(function() { 
-    const term = document.getElementById('admClientSearch').value.toLowerCase(); 
-    document.getElementById('admClientList').innerHTML = globalClients.filter(c => c.name.toLowerCase().includes(term) || String(c.taxId).includes(term)).map(c => `<div class="item-row bg-white d-flex justify-content-between align-items-center shadow-sm"><div><div class="fw-bold text-dark fs-6">${c.name}</div><div class="small text-muted mt-1">統編: ${c.taxId||'無'}</div></div><button class="btn btn-outline-danger btn-sm fw-bold px-3" onclick="openEditClientModal('${escapeQuotes(c.name)}', '${escapeQuotes(c.taxId)}')">📝 編輯</button></div>`).join(''); 
-}, 300);
-
-window.openNewClientModal = function() { 
-    document.getElementById('addClientName').value = ''; 
-    document.getElementById('addClientTaxId').value = ''; 
-    document.getElementById('addClientAddress').value = ''; 
-    document.getElementById('addClientReceiveDept').value = ''; 
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('addClientModal')).show(); 
-};
-
-window.submitNewClientOptimistic = function() { 
-    const name = document.getElementById('addClientName').value.trim(); 
-    const taxId = document.getElementById('addClientTaxId').value.trim(); 
-    const address = document.getElementById('addClientAddress').value.trim(); 
-    const receiveDept = document.getElementById('addClientReceiveDept').value.trim(); 
-    if(!name) return alert('名稱必填'); 
-    
-    globalClients.push({ name, taxId, address, receiveDept }); 
-    populateAdminClientFilter(); window.renderAdminClients(); 
-    bootstrap.Modal.getInstance(document.getElementById('addClientModal')).hide(); 
-    pushToSyncQueue('addClientData', {clientName: name, taxId, address, receiveDept}, null); 
-};
-
-window.openEditClientModal = function(name, taxId) { 
-    const c = globalClients.find(x => x.name === name);
-    document.getElementById('editClientOldName').value = name; 
-    document.getElementById('editClientName').value = name; 
-    document.getElementById('editClientTaxId').value = taxId; 
-    document.getElementById('editClientAddress').value = c ? (c.address || '') : '';
-    document.getElementById('editClientReceiveDept').value = c ? (c.receiveDept || '') : '';
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('editClientModal')).show(); 
-};
-
-window.submitEditClientOptimistic = function() { 
-    const old = document.getElementById('editClientOldName').value; 
-    const name = document.getElementById('editClientName').value.trim(); 
-    const tax = document.getElementById('editClientTaxId').value.trim(); 
-    const address = document.getElementById('editClientAddress').value.trim(); 
-    const receiveDept = document.getElementById('editClientReceiveDept').value.trim(); 
-    if(!name) return; 
-    
-    const c = globalClients.find(x => x.name === old); 
-    if(c) { c.name = name; c.taxId = tax; c.address = address; c.receiveDept = receiveDept; } 
-    globalCatalog.forEach(p => { if(p.clientName === old) p.clientName = name; }); 
-    
-    populateAdminClientFilter(); window.renderAdminClients(); window.renderAdminItems(); 
-    bootstrap.Modal.getInstance(document.getElementById('editClientModal')).hide(); 
-    pushToSyncQueue('updateClientData', {oldName: old, newName: name, newTaxId: tax, address, receiveDept}, null); 
-};
-
-window.renderAdminItems = debounce(function() { 
-    const f = document.getElementById('admItemFilterSelect').value; 
-    const t = document.getElementById('admItemSearch').value.toLowerCase(); 
-    let arr = globalCatalog; 
-    if(f) arr = arr.filter(p => p.clientName === f); 
-    if(t) arr = arr.filter(p => p.productName.toLowerCase().includes(t) || p.clientName.toLowerCase().includes(t)); 
-    
-    document.getElementById('admItemList').innerHTML = arr.length ? arr.map(p => `<div class="item-row bg-white d-flex justify-content-between align-items-center shadow-sm"><div><div class="fw-bold text-dark fs-6 mb-2">${p.productName} <span class="badge bg-secondary ms-1">${p.internalCode||''}</span></div><div class="d-flex align-items-center"><span class="badge bg-light text-dark border me-2 align-self-center">${p.clientName}</span><div class="bg-success text-white px-2 py-1 rounded shadow-sm d-inline-block"><span class="fw-bold">NT$ ${p.price}</span></div><span class="text-muted small fw-bold ms-1">/ ${p.unit}</span></div></div><button class="btn btn-outline-primary btn-sm fw-bold px-3 ms-2" onclick="openAdminItemModal(${p.rowIndex})">📝</button></div>`).join('') : '<div class="text-center text-muted py-4">查無對應品項</div>'; 
-}, 300);
-
-window.openAdminItemModal = function(idx) { 
-    const m = document.getElementById('editItemModal'); 
-    const ipt = document.getElementById('editItemClientDisplay'); 
-    if(idx) { 
-        const p = globalCatalog.find(x => x.rowIndex === idx); 
-        document.getElementById('editItemRowIndex').value = idx; 
-        ipt.value = p.clientName; 
-        document.getElementById('editItemClientVal').value = p.clientName; 
-        ipt.onclick = null; ipt.classList.remove('fake-input-btn'); 
-        document.getElementById('editItemName').value = p.productName; 
-        document.getElementById('editItemInternalCode').value = p.internalCode || ''; 
-        document.getElementById('editItemUnit').value = p.unit; 
-        document.getElementById('editItemPrice').value = p.price; 
-    } else { 
-        document.getElementById('editItemRowIndex').value = ''; 
-        ipt.value = ''; ipt.onclick = triggerItemClientSelect; ipt.classList.add('fake-input-btn'); 
-        document.getElementById('editItemName').value = ''; 
-        document.getElementById('editItemInternalCode').value = ''; 
-        document.getElementById('editItemUnit').value = '式'; 
-        document.getElementById('editItemPrice').value = ''; 
-    } 
-    bootstrap.Modal.getOrCreateInstance(m).show(); 
-};
-
-window.triggerItemClientSelect = function() { 
-    bootstrap.Modal.getInstance(document.getElementById('editItemModal')).hide(); 
-    openSearchModal('admin_client', (val) => { 
-        document.getElementById('editItemClientDisplay').value = val; 
-        document.getElementById('editItemClientVal').value = val; 
-        setTimeout(()=> bootstrap.Modal.getOrCreateInstance(document.getElementById('editItemModal')).show(), 400); 
-    }); 
-};
-
-window.submitEditItemOptimistic = function() { 
-    const idx = document.getElementById('editItemRowIndex').value; 
-    const client = document.getElementById('editItemClientVal').value; 
-    const name = document.getElementById('editItemName').value.trim(); 
-    const internalCode = document.getElementById('editItemInternalCode').value.trim(); 
-    const unit = document.getElementById('editItemUnit').value.trim(); 
-    const price = document.getElementById('editItemPrice').value; 
-    
-    if(!client || !name || !price) return alert('必填未填'); 
-    
-    const payload = { 
-        rowIndex: idx ? parseInt(idx) : null, 
-        clientName: client, 
-        productName: name, 
-        internalCode: internalCode, 
-        unit: unit, 
-        price: Number(price) 
-    }; 
-    
-    if(idx) { 
-        const p = globalCatalog.find(x => x.rowIndex === payload.rowIndex); 
-        if(p) Object.assign(p, payload); 
-    } else { 
-        globalCatalog.push({ 
-            rowIndex: Date.now(), 
-            clientName: client, 
-            productName: name, 
-            internalCode: internalCode, 
-            unit: unit, 
-            price: Number(price) 
-        }); 
-    } 
-    
-    window.renderAdminItems(); 
-    bootstrap.Modal.getInstance(document.getElementById('editItemModal')).hide(); 
-    
-    pushToSyncQueue('saveAdminItem', payload, null); 
 };
