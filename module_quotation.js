@@ -386,7 +386,7 @@ window.verifyQuotationToInvoice = function(gid) {
 };
 
 // ============================================================================
-// 【完美優化】列印估價單 (支援 A4 舒展排版、過濾日期、真實公司大小章)
+// 列印估價單 (支援 A4 舒展排版、過濾日期、真實公司大小章 - 改用 Thumbnail API)
 // ============================================================================
 window.printQuotation = function(gid) {
     const quotesInGroup = globalQuotes.filter(q => q.mergeId === gid || `Single_${q.rowIdx}` === gid);
@@ -440,17 +440,16 @@ window.printQuotation = function(gid) {
         `;
     }).join('');
 
-    // (3) 完美替換真實大小章 (利用 mix-blend-mode 模擬印章蓋印效果)
+    // 【更新】使用 Thumbnail API 以繞過 Google 防盜鏈阻擋
     const sealHtml = useSeal ? `
         <div style="position: absolute; right: 50px; bottom: 10px; display: flex; align-items: flex-end; pointer-events: none; z-index: 10; opacity: 0.95;">
             <!-- 大章 -->
-            <img src="https://drive.google.com/uc?export=view&id=1f6zlONs70zTGucx1h5ttJD1OLzyygXuu" alt="大章" style="width: 150px; height: auto; mix-blend-mode: multiply;">
+            <img src="https://drive.google.com/thumbnail?id=1f6zlONs70zTGucx1h5ttJD1OLzyygXuu&sz=w800" alt="大章" style="width: 150px; height: auto; mix-blend-mode: multiply;">
             <!-- 小章 (疊加在大章左下) -->
-            <img src="https://drive.google.com/uc?export=view&id=1AnqCPy5MbzXcEwsQFxHVBiS_pZB7AL6z" alt="小章" style="width: 55px; height: auto; mix-blend-mode: multiply; margin-left: -40px; margin-bottom: 10px;">
+            <img src="https://drive.google.com/thumbnail?id=1AnqCPy5MbzXcEwsQFxHVBiS_pZB7AL6z&sz=w800" alt="小章" style="width: 55px; height: auto; mix-blend-mode: multiply; margin-left: -40px; margin-bottom: 10px;">
         </div>
     ` : '';
 
-    // (6) 完美的 A4 滿版舒展排版 (加入 flex-grow: 1 撐開間距)
     const html = `
         <div style="padding: 10mm 15mm; max-width: 800px; margin: 0 auto; position: relative; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000; background: #fff; box-sizing: border-box; min-height: 280mm; display: flex; flex-direction: column;">
             
@@ -463,7 +462,6 @@ window.printQuotation = function(gid) {
                 <div style="width: 55%;">
                     <div style="font-size: 20px; border-bottom: 1px solid #000; padding-bottom: 5px; margin-bottom: 15px;">
                         <strong>客戶名稱：${escapeQuotes(clientName)}</strong>
-                        <!-- (2) 移除鈞鑒 -->
                     </div>
                     <div><strong>估價單號：</strong>${escapeQuotes(quoteNos)}</div>
                     <div><strong>估價日期：</strong>${dateStr}</div>
@@ -493,7 +491,6 @@ window.printQuotation = function(gid) {
                 <tfoot>
                     <tr>
                         <td colspan="5" style="border: 1px solid #000; padding: 15px; text-align: right; font-weight: bold; letter-spacing: 2px;">總金額 (含稅)</td>
-                        <!-- (5) 總金額改為黑字 -->
                         <td style="border: 1px solid #000; padding: 15px; text-align: right; font-weight: bold; font-size: 18px; color: #000;">$${totalAmount.toLocaleString()}</td>
                     </tr>
                 </tfoot>
@@ -507,16 +504,14 @@ window.printQuotation = function(gid) {
                 <div style="white-space: pre-wrap; line-height: 1.8;">${escapeQuotes(mainMemo) || '無'}</div>
                 ${sealHtml}
             </div>
-            
-            <!-- (4) 客戶簽章與業務經辦已移除 -->
         </div>
     `;
 
     const printQuoteArea = document.getElementById('printQuoteArea');
     if (printQuoteArea) {
         printQuoteArea.innerHTML = html;
-        if (typeof applyPrintStyle === 'function') applyPrintStyle('A4', 'portrait');
-        if (typeof showPrintPreview === 'function') showPrintPreview('printQuoteArea');
+        if (typeof window.applyPrintStyle === 'function') window.applyPrintStyle('A4', 'portrait');
+        if (typeof window.showPrintPreview === 'function') window.showPrintPreview('printQuoteArea');
     } else {
         alert('系統錯誤：找不到估價單列印區塊');
     }
