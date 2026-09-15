@@ -439,9 +439,9 @@ window.printPurchaseOrder = function(data) {
     const totalAmount = parseFloat(data.poQty) * parseFloat(data.poUnitPrice || 0);
     const dateStr = data.poDate ? data.poDate.replace(/-/g, '/') : getTodayStr().replace(/-/g, '/');
 
-    // 【排版優化】加上 max-width: 800px 限制容器，解決網頁版無限拉長問題
+    // 【排版終極優化】加上 padding: 15mm 20mm 的安全出血邊界，保護內容不被印表機物理裁切
     const html = `
-        <div style="max-width: 800px; margin: 0 auto; background: #fff; padding: 20px; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000;">
+        <div style="max-width: 800px; margin: 0 auto; background: #fff; padding: 15mm 20mm; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000;">
             <div style="text-align: center; font-size: 26px; font-weight: 900; letter-spacing: 5px; margin-bottom: 10px; color: #000;">長固實業有限公司 - 訂貨單</div>
             
             <table style="width: 100%; border: none; margin-bottom: 15px; font-size: 14px; color: #000;">
