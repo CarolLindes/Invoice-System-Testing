@@ -22,14 +22,14 @@ let globalOrders = [];
 let globalInventory = []; 
 let globalSalesDetails = []; 
 let globalInvLogs = []; 
-let globalQuotes = []; // 【補回】估價單全域資料
+let globalQuotes = []; 
 let emailSettingsData = { list: [], selected: [] };
 
 let myLastSyncTime = 0;
 
 let aiTempData = null; 
 let currentOrderManualItems = []; 
-let currentQuoItems = []; // 【補回】估價單當前編輯品項
+let currentQuoItems = []; 
 let selectedOrderCache = []; 
 let currentInvoiceData = { clientName:'', taxId:'', items:[] }; 
 let currentSearchSource = []; 
@@ -252,7 +252,7 @@ function updateSyncIndicator() {
 function silentRefreshData() {
     callApi('getInitData', {}).then(res => {
         globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
-        globalQuotes = res.quotes || []; // 【補回】
+        globalQuotes = res.quotes || []; 
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -292,7 +292,7 @@ function debounce(func, delay = 300) {
 }
 
 // ============================================================================
-// 【完美還原】動態切換紙張版型與預覽列印系統
+// 【全新優化】動態切換紙張版型與防擠壓預覽系統
 // ============================================================================
 window.applyPrintStyle = function(size, layout) {
     let styleNode = document.getElementById('dynamicPrintStyle');
@@ -301,12 +301,24 @@ window.applyPrintStyle = function(size, layout) {
         styleNode.id = 'dynamicPrintStyle';
         document.head.appendChild(styleNode);
     }
+    
     styleNode.innerHTML = `
+    /* 手機/電腦的畫面預覽樣式：確保排版不被螢幕寬度擠壓變形 */
+    @media screen {
+        .print-active > div {
+            min-width: 800px !important;
+            margin: 0 auto !important;
+            background: #fff;
+            box-shadow: 0 0 15px rgba(0,0,0,0.3);
+        }
+    }
+    /* 真實印表機列印樣式：隱藏按鈕、滿版輸出 */
     @media print { 
         @page { size: ${size} ${layout}; margin: 0mm; } 
         body { background: #fff !important; padding-top: 0 !important; } 
         #printControlBar { display: none !important; }
-        .preview-paper { box-shadow: none !important; margin: 0 !important; max-width: none !important; }
+        .print-active { padding: 0 !important; overflow: visible !important; }
+        .print-active > div { min-width: 100% !important; margin: 0 !important; box-shadow: none !important; }
     }`;
 };
 
@@ -314,16 +326,23 @@ window.showPrintPreview = function(areaId) {
     document.getElementById('mainApp').style.display = 'none';
     document.getElementById('homeMenu').style.display = 'none';
     
-    document.getElementById('printArea').style.display = 'none';
-    document.getElementById('printPoArea').style.display = 'none';
-    document.getElementById('printQuoteArea').style.display = 'none';
-    document.getElementById('printArea').classList.remove('print-active');
-    document.getElementById('printPoArea').classList.remove('print-active');
-    document.getElementById('printQuoteArea').classList.remove('print-active');
+    // 初始化所有列印區塊
+    ['printArea', 'printPoArea', 'printQuoteArea'].forEach(id => {
+        const el = document.getElementById(id);
+        if(el) {
+            el.style.display = 'none';
+            el.classList.remove('print-active');
+        }
+    });
     
     const targetArea = document.getElementById(areaId);
     targetArea.style.display = 'block';
     targetArea.classList.add('print-active');
+    
+    // 【手機端防擠壓】加入允許水平滑動的外層容器設定
+    targetArea.style.width = '100%';
+    targetArea.style.overflowX = 'auto';
+    targetArea.style.padding = '20px 0';
     
     let controlBar = document.getElementById('printControlBar');
     if (!controlBar) {
@@ -340,22 +359,28 @@ window.showPrintPreview = function(areaId) {
     controlBar.style.display = 'flex';
     document.body.style.backgroundColor = '#2c3034';
     document.body.style.paddingTop = '80px'; 
+    document.body.style.overflow = 'auto'; 
     window.scrollTo(0,0);
 };
 
 window.closePrintPreview = function() {
     let controlBar = document.getElementById('printControlBar');
-    if(controlBar) controlBar.style.display = 'none';
+    if(controlBar) controlBar.remove(); // 【修復】徹底從節點中刪除，防止卡死
     
     document.body.style.paddingTop = '0px';
     document.body.style.backgroundColor = ''; 
+    document.body.style.overflow = ''; 
     
-    document.getElementById('printArea').style.display = 'none';
-    document.getElementById('printPoArea').style.display = 'none';
-    document.getElementById('printQuoteArea').style.display = 'none';
-    document.getElementById('printArea').classList.remove('print-active');
-    document.getElementById('printPoArea').classList.remove('print-active');
-    document.getElementById('printQuoteArea').classList.remove('print-active');
+    ['printArea', 'printPoArea', 'printQuoteArea'].forEach(id => {
+        const el = document.getElementById(id);
+        if(el) {
+            el.style.display = 'none';
+            el.classList.remove('print-active');
+            el.style.width = '';
+            el.style.overflowX = '';
+            el.style.padding = '';
+        }
+    });
     
     document.getElementById('mainApp').style.display = 'block';
 };
@@ -445,7 +470,7 @@ window.initSystemData = function() {
     callApi('getInitData', {}).then(res => {
         clearInterval(intv); setProgress(100, '✅ 準備完成！');
         globalClients = res.clients || []; globalSuppliers = res.suppliers || []; globalCatalog = res.catalog || []; globalHistory = res.history || []; globalOrders = res.orders || []; globalInventory = res.inventory || []; globalSalesDetails = res.salesDetails || []; globalInvLogs = res.invLogs || [];
-        globalQuotes = res.quotes || []; // 【補回】
+        globalQuotes = res.quotes || []; 
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -476,7 +501,7 @@ window.refreshData = function() {
     showLoading("同步最新資料...");
     callApi('getInitData', {}).then(res => {
         globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
-        globalQuotes = res.quotes || []; // 【補回】
+        globalQuotes = res.quotes || []; 
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -492,7 +517,7 @@ window.refreshData = function() {
         if(document.getElementById('sys-admin').style.display === 'block' && typeof window.renderAdminItems === "function") { window.renderAdminItems(); window.renderAdminClients(); }
         if(document.getElementById('sys-order').style.display === 'block' && typeof window.renderOrderList === "function") window.renderOrderList();
         if(document.getElementById('sys-inventory').style.display === 'block' && typeof window.renderInventory === "function") { window.renderInventory(); window.renderInvLogs(); renderShipments(); }
-        if(document.getElementById('sys-quotation').style.display === 'block' && typeof window.renderQuotationList === "function") window.renderQuotationList(); // 【補回】
+        if(document.getElementById('sys-quotation').style.display === 'block' && typeof window.renderQuotationList === "function") window.renderQuotationList(); 
     }).catch(err => { hideLoading(); alert("同步失敗：" + err.message); });
 };
 
@@ -500,7 +525,6 @@ window.enterSystem = function(modId) {
     document.getElementById('homeMenu').style.display = 'none'; document.getElementById('mainApp').style.display = 'block';
     document.querySelectorAll('.sys-module').forEach(el => el.style.display = 'none'); document.getElementById(`sys-${modId}`).style.display = 'block';
     
-    // 【補回】加入估價單標題對應
     const titles = {'order':'📦 訂單辨識建檔', 'invoice':'📝 開立發票', 'inventory': '🏭 產品庫存管理', 'history':'📊 紀錄與報表', 'admin':'⚙️ 管理員後台', 'quotation': '📑 開立估價單'}; 
     
     if(document.getElementById('sysTitle')) document.getElementById('sysTitle').innerText = titles[modId]; 
@@ -510,7 +534,7 @@ window.enterSystem = function(modId) {
     if(modId === 'admin' && typeof window.renderAdminItems === "function") { window.renderAdminItems(); window.renderAdminClients(); }
     if(modId === 'order' && typeof window.renderOrderList === "function") window.renderOrderList();
     if(modId === 'inventory' && typeof window.renderInventory === "function") { window.renderInventory(); window.renderInvLogs(); renderShipments(); }
-    if(modId === 'quotation' && typeof window.renderQuotationList === "function") window.renderQuotationList(); // 【補回】
+    if(modId === 'quotation' && typeof window.renderQuotationList === "function") window.renderQuotationList(); 
 };
 
 window.backToHome = function() { document.getElementById('mainApp').style.display = 'none'; document.getElementById('homeMenu').style.display = 'block'; };
