@@ -256,7 +256,6 @@ function silentRefreshData() {
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
-        // 【修復】全面補齊全域前綴防護
         if (typeof window.populateAdminClientFilter === "function") window.populateAdminClientFilter();
         if (typeof window.updateHistoryDropdowns === "function") window.updateHistoryDropdowns();
         if (typeof window.populateLogDropdowns === "function") window.populateLogDropdowns();
@@ -277,7 +276,7 @@ function silentRefreshData() {
         if(document.getElementById('sys-inventory') && document.getElementById('sys-inventory').style.display === 'block') { 
             if (typeof window.renderInventory === "function") window.renderInventory(); 
             if (typeof window.renderInvLogs === "function") window.renderInvLogs(); 
-            if (typeof window.renderShipments === "function") window.renderShipments(); // 【修復】
+            if (typeof window.renderShipments === "function") window.renderShipments(); 
         }
         if(document.getElementById('sys-quotation') && document.getElementById('sys-quotation').style.display === 'block') {
             if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
@@ -307,7 +306,7 @@ function debounce(func, delay = 300) {
 }
 
 // ============================================================================
-// 動態切換紙張版型與防擠壓預覽系統
+// 【強制隱藏浮水印】動態切換紙張版型與防擠壓預覽系統
 // ============================================================================
 window.applyPrintStyle = function(size, layout) {
     let styleNode = document.getElementById('dynamicPrintStyle');
@@ -318,6 +317,9 @@ window.applyPrintStyle = function(size, layout) {
     }
     
     styleNode.innerHTML = `
+    /* 【關鍵修正】強制在最頂層宣告邊界為 0，徹底消滅頁首頁尾浮水印 */
+    @page { size: ${size} ${layout}; margin: 0mm !important; }
+
     @media screen {
         .print-active > div {
             min-width: 800px !important;
@@ -327,7 +329,6 @@ window.applyPrintStyle = function(size, layout) {
         }
     }
     @media print { 
-        @page { size: ${size} ${layout}; margin: 0mm; } 
         body { background: #fff !important; padding-top: 0 !important; } 
         #printControlBar { display: none !important; }
         .print-active { padding: 0 !important; overflow: visible !important; }
