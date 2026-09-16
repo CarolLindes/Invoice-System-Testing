@@ -5,7 +5,7 @@
  */
 
 // 🔴 系統 API 端點 (依據原始設定)
-const API_URL = "https://script.google.com/macros/s/AKfycbxWzxfHYdw9qvcPtGpU2qjxk-10hToTb1Jx-LrMhBN1jkR3IXUnu8m6UgfKcGMsi0tl/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbwR4pxjLSldLQW3sG7y8FiTPyV4mZg4rq0L33k0Htz26RxK8mrjFpucpW7pnBmpZaXD/exec";
 
 // ============================================================================
 // 全域變數與狀態管理
@@ -393,6 +393,7 @@ window.closePrintPreview = function() {
     document.body.style.backgroundColor = ''; 
     document.body.style.overflow = ''; 
     
+    // 【新增】確保關閉時隱藏送貨單列印區塊
     ['printArea', 'printPoArea', 'printQuoteArea', 'printDeliveryArea'].forEach(id => {
         const el = document.getElementById(id);
         if(el) {
@@ -591,6 +592,7 @@ window.enterSystem = function(modId) {
     if(modId === 'quotation') {
         if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
     }
+    // 【新增】進入送貨模組時渲染資料
     if(modId === 'delivery') {
         if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
     }
