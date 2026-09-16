@@ -23,6 +23,7 @@ let globalInventory = [];
 let globalSalesDetails = []; 
 let globalInvLogs = []; 
 let globalQuotes = []; 
+let globalDeliveries = []; // 【新增】全域送貨追蹤資料
 let emailSettingsData = { list: [], selected: [] };
 
 let myLastSyncTime = 0;
@@ -190,8 +191,8 @@ function translateTaskDesc(t) {
     switch(t.action) {
         case 'saveOrderData': return `📦 建立/編輯訂單 | 醫院: ${p.clientName||'未知'} | 單號: ${p.orderNo||'無'}`;
         case 'submitInvoice': return `📝 開立發票 | 客戶: ${p.clientName||'未知'} | 總計: $${(p.totalWithTax||0).toLocaleString()}`;
-        case 'updateShipment': return `🚚 出貨作業 | 扣庫存 (${p.updates?.[0]?.name||'多筆品項'})`;
-        case 'adjustInventory': return `🏭 庫存異動 | 品項: ${p.name||'未知'} | 動作: ${p.type||''} (${(p.changeQty||0)>0?'+':''}${p.changeQty||0})`;
+        case 'updateShipmentWithBatch': return `🚚 出貨作業 (含批號) | 扣庫存 (${p.updates?.[0]?.name||'多筆品項'})`;
+        case 'adjustInventoryWithBatch': return `🏭 庫存異動 (含批號) | 品項: ${p.name||'未知'} | 動作: ${p.type||''} (${(p.changeQty||0)>0?'+':''}${p.changeQty||0})`;
         case 'submitPurchaseOrder': return `🛒 向廠商訂貨 | 品項: ${p.name||'未知'}`;
         case 'supplementInvoiceNo': return `📝 補登發票 | 新號碼: ${p.newPaperNo||'未知'}`;
         case 'addClientData': return `🏢 新增客戶 | 名稱: ${p.clientName||'未知'}`;
@@ -205,6 +206,10 @@ function translateTaskDesc(t) {
         case 'unmergeQuotations': return `✂️ 解除合併估價單`;
         case 'updateQuotationStatus': return `🔄 更改估價單狀態 | 新狀態: ${p.status}`;
         case 'splitAndVoidQuotationItems': return `🗑️ 拆分作廢估價單品項 | 單號: ${p.quoteNo}`;
+        case 'saveDelivery': return `🚚 新增送貨追蹤 | 客戶: ${p.client||'未知'}`;
+        case 'updateDeliveryStatus': return `✍️ 送貨簽收狀態變更 | 狀態: ${p.status}`;
+        case 'revertDelivery': return `🔙 退回待送貨 | 動作: 退回`;
+        case 'modifyLogBatch': return `🔄 修改出貨批號 | 新批號: ${p.newLot||'未知'}`;
         default: return `⚙️ 系統操作 (${t.action})`;
     }
 }
@@ -253,6 +258,7 @@ function silentRefreshData() {
     callApi('getInitData', {}).then(res => {
         globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
         globalQuotes = res.quotes || []; 
+        globalDeliveries = res.deliveries || []; // 【新增】取得送貨追蹤資料
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -280,6 +286,9 @@ function silentRefreshData() {
         }
         if(document.getElementById('sys-quotation') && document.getElementById('sys-quotation').style.display === 'block') {
             if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+        }
+        if(document.getElementById('sys-delivery') && document.getElementById('sys-delivery').style.display === 'block') {
+            if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
         }
     }).catch(err => console.log('背景默默同步失敗:', err));
 }
@@ -340,7 +349,8 @@ window.showPrintPreview = function(areaId) {
     document.getElementById('mainApp').style.display = 'none';
     document.getElementById('homeMenu').style.display = 'none';
     
-    ['printArea', 'printPoArea', 'printQuoteArea'].forEach(id => {
+    // 【新增】把送貨單的列印區塊也加進來控制
+    ['printArea', 'printPoArea', 'printQuoteArea', 'printDeliveryArea'].forEach(id => {
         const el = document.getElementById(id);
         if(el) {
             el.style.display = 'none';
@@ -383,7 +393,7 @@ window.closePrintPreview = function() {
     document.body.style.backgroundColor = ''; 
     document.body.style.overflow = ''; 
     
-    ['printArea', 'printPoArea', 'printQuoteArea'].forEach(id => {
+    ['printArea', 'printPoArea', 'printQuoteArea', 'printDeliveryArea'].forEach(id => {
         const el = document.getElementById(id);
         if(el) {
             el.style.display = 'none';
@@ -483,6 +493,7 @@ window.initSystemData = function() {
         clearInterval(intv); setProgress(100, '✅ 準備完成！');
         globalClients = res.clients || []; globalSuppliers = res.suppliers || []; globalCatalog = res.catalog || []; globalHistory = res.history || []; globalOrders = res.orders || []; globalInventory = res.inventory || []; globalSalesDetails = res.salesDetails || []; globalInvLogs = res.invLogs || [];
         globalQuotes = res.quotes || []; 
+        globalDeliveries = res.deliveries || []; // 【新增】取得送貨追蹤資料
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -514,6 +525,7 @@ window.refreshData = function() {
     callApi('getInitData', {}).then(res => {
         globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
         globalQuotes = res.quotes || []; 
+        globalDeliveries = res.deliveries || []; // 【新增】取得送貨追蹤資料
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -544,6 +556,9 @@ window.refreshData = function() {
         if(document.getElementById('sys-quotation') && document.getElementById('sys-quotation').style.display === 'block') {
             if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
         }
+        if(document.getElementById('sys-delivery') && document.getElementById('sys-delivery').style.display === 'block') {
+            if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
+        }
     }).catch(err => { hideLoading(); alert("同步失敗：" + err.message); });
 };
 
@@ -551,7 +566,8 @@ window.enterSystem = function(modId) {
     document.getElementById('homeMenu').style.display = 'none'; document.getElementById('mainApp').style.display = 'block';
     document.querySelectorAll('.sys-module').forEach(el => el.style.display = 'none'); document.getElementById(`sys-${modId}`).style.display = 'block';
     
-    const titles = {'order':'📦 訂單辨識建檔', 'invoice':'📝 開立發票', 'inventory': '🏭 產品庫存管理', 'history':'📊 紀錄與報表', 'admin':'⚙️ 管理員後台', 'quotation': '📑 開立估價單'}; 
+    // 【新增】送貨追蹤標題設定
+    const titles = {'order':'📦 訂單辨識建檔', 'invoice':'📝 開立發票', 'inventory': '🏭 產品庫存管理', 'history':'📊 紀錄與報表', 'admin':'⚙️ 管理員後台', 'quotation': '📑 開立估價單', 'delivery': '🚚 送貨追蹤與簽收'}; 
     
     if(document.getElementById('sysTitle')) document.getElementById('sysTitle').innerText = titles[modId]; 
     document.getElementById('mainApp').scrollTo(0,0);
@@ -574,6 +590,9 @@ window.enterSystem = function(modId) {
     }
     if(modId === 'quotation') {
         if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+    }
+    if(modId === 'delivery') {
+        if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
     }
 };
 
