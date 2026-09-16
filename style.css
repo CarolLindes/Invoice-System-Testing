@@ -34,6 +34,8 @@ html, body {
 .home-card:active { transform: scale(0.97); }
 .c-inv { border-bottom-color: #0d6efd; } .c-ord { border-bottom-color: #ffc107; } .c-stk { border-bottom-color: #0dcaf0; grid-column: span 2; } .c-rep { border-bottom-color: #198754; grid-column: span 2; } .c-mgr { border-bottom-color: #dc3545; grid-column: span 2; }
 .c-quo { border-bottom-color: #6f42c1; grid-column: span 2; }
+/* 【新增】送貨追蹤模組卡片顏色 */
+.c-dlv { border-bottom-color: #fd7e14; grid-column: span 2; }
 
 #mainApp { display: none; height: 100dvh; overflow-y: auto; padding-bottom: max(60px, env(safe-area-inset-bottom)); animation: fadeIn 0.3s; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -87,9 +89,23 @@ html, body {
 }
 
 /* ==========================================================================
+   【新增】電子簽收畫布專屬樣式
+   ========================================================================== */
+#signaturePad {
+    border: 2px dashed #adb5bd;
+    border-radius: 12px;
+    background: #fafafa;
+    cursor: crosshair;
+    touch-action: none; /* 禁用預設的滑動事件，確保能在手機上手寫 */
+    width: 100%;
+    height: 250px;
+    box-shadow: inset 0 2px 5px rgba(0,0,0,0.05);
+}
+
+/* ==========================================================================
    列印專屬樣式 (@media print)
    ========================================================================== */
-#printArea, #printPoArea, #printQuoteArea { display: none; }
+#printArea, #printPoArea, #printQuoteArea, #printDeliveryArea { display: none; }
 
 @media print {
     body { background: #fff !important; margin: 0; padding: 0; }
@@ -99,13 +115,8 @@ html, body {
         display: none !important;
     }
     
-    /* 強制將頁面本身的 margin 設為 0，這能關閉瀏覽器預設的網址、日期等浮水印 */
-    @page {
-        margin: 0;
-    }
-    
     /* 控制預設的版面顯示 */
-    #printArea, #printPoArea, #printQuoteArea {
+    #printArea, #printPoArea, #printQuoteArea, #printDeliveryArea {
         width: 100%;
         color: #000;
         font-family: "MingLiU", "微軟正黑體", sans-serif;
