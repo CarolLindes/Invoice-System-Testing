@@ -230,7 +230,6 @@ window.resetInvoiceSystem = function() {
 // ============================================================================
 // 歷史紀錄與報表模組
 // ============================================================================
-// 【修復】補回遺失的歷史紀錄下拉選單函數，並加入空值防護
 window.updateHistoryDropdowns = function() { 
     const staffs = [...new Set(globalHistory.map(h => h.staff || '').filter(x => x))].sort(); 
     const clients = [...new Set(globalHistory.map(h => h.client || '').filter(x => x))].sort(); 
@@ -247,7 +246,6 @@ window.renderHistory = debounce(function() {
     const fClient = document.getElementById('histFilterClient').value; 
     const fDate = document.getElementById('histFilterDate').value; 
     const fStatus = document.getElementById('histFilterStatus').value; 
-    // 【修復】加上空值防護
     const term = (document.getElementById('histSearch').value || '').toLowerCase();
     
     let filtered = globalHistory;
@@ -259,7 +257,6 @@ window.renderHistory = debounce(function() {
         filtered = filtered.filter(h => { const d = new Date(h.time).setHours(0,0,0,0); return d === target; }); 
     }
     
-    // 【修復】全面空值防護，防止 toLowerCase 報錯
     if(term) {
         filtered = filtered.filter(h => 
             (h.client || '').toLowerCase().includes(term) || 
@@ -368,8 +365,9 @@ window.printDeliveryNote = function(idx) {
         tbodyHtml = `<tr><td colspan="6" style="border: 1px solid #333; padding: 8px; text-align: center;">(無明細資料或為舊資料)</td></tr>`;
     }
 
+    // 【修改 1：加入 padding: 15mm 20mm 與 max-width 完美防裁切框架】
     const html = `
-        <div style="padding: 0; width: 100%; box-sizing: border-box;">
+        <div style="max-width: 800px; margin: 0 auto; background: #fff; padding: 15mm 20mm; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000;">
             <table style="width: 100%; border: none; margin-bottom: 15px;">
                 <tr>
                     <td style="width: 50%; vertical-align: top;">
@@ -523,12 +521,65 @@ window.generateReport = function() {
     document.getElementById('repTotal').innerText = `$${rTotal.toLocaleString()}`;
 };
 
+// 【修改 2：動態生成 Email 多選彈跳視窗，直接連動後台資料】
 window.exportReportToEmail = function() {
     const sVal = document.getElementById('repStart').value; 
     const eVal = document.getElementById('repEnd').value; 
-    if(!sVal || !eVal) return alert("請先設定日期");
+    if(!sVal || !eVal) return alert("請先設定報表統計日期範圍！");
     
-    const email = prompt("接收報表的 Email："); if(!email) return; 
+    // 動態建立專屬的信箱選擇 Modal
+    let modalEl = document.getElementById('dynamicEmailModal');
+    if (!modalEl) {
+        const modalHtml = `
+        <div class="modal fade" id="dynamicEmailModal" tabindex="-1">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content border-0 shadow-lg">
+                    <div class="modal-header bg-light">
+                        <h5 class="modal-title fw-bold text-dark">📧 選擇報表收件信箱</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="small text-muted mb-3">請勾選要發送 Excel 報表的對象 (資料連動自後台「收件信箱管理」)</div>
+                        <div id="dynamicEmailCheckboxes" class="d-flex flex-column gap-2"></div>
+                    </div>
+                    <div class="modal-footer border-0">
+                        <button type="button" class="btn btn-secondary fw-bold" data-bs-dismiss="modal">取消</button>
+                        <button type="button" class="btn btn-primary fw-bold" onclick="confirmExportReport()">確認並寄出</button>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+    }
+    
+    const container = document.getElementById('dynamicEmailCheckboxes');
+    if (!emailSettingsData || !emailSettingsData.list || emailSettingsData.list.length === 0) {
+        container.innerHTML = '<div class="text-danger fw-bold py-3 text-center">找不到信箱清單，請確認後台「收件信箱管理」是否有資料！</div>';
+    } else {
+        container.innerHTML = emailSettingsData.list.map((item, idx) =>
+            `<div class="form-check p-3 border rounded bg-white shadow-sm d-flex align-items-center mb-2">
+                <input class="form-check-input dyn-email-cb m-0 me-3" type="checkbox" value="${item.email}" id="dyn_em_${idx}" style="transform: scale(1.3); cursor: pointer;">
+                <label class="form-check-label fw-bold text-dark w-100" for="dyn_em_${idx}" style="cursor: pointer;">
+                    ${item.email} ${item.memo ? `<span class="badge bg-secondary ms-2">${item.memo}</span>` : ''}
+                </label>
+             </div>`
+        ).join('');
+    }
+    
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('dynamicEmailModal')).show();
+};
+
+window.confirmExportReport = function() {
+    const cbs = document.querySelectorAll('.dyn-email-cb:checked');
+    const emails = Array.from(cbs).map(cb => cb.value);
+    if(emails.length === 0) return alert("請至少勾選一個收件信箱！");
+    
+    const emailStr = emails.join(','); // 將多個信箱以逗號分隔傳遞給後端
+    
+    const sVal = document.getElementById('repStart').value; 
+    const eVal = document.getElementById('repEnd').value; 
+    
+    bootstrap.Modal.getInstance(document.getElementById('dynamicEmailModal')).hide();
     showLoading("產生 Excel 中...");
     
     const sDate = new Date(sVal); sDate.setHours(0,0,0,0); 
@@ -553,12 +604,13 @@ window.exportReportToEmail = function() {
     });
     
     const payload = { 
-        email: email, dateRange: `${sVal} ~ ${eVal}`, summary: { count: rCount, net: rNet, tax: rTax, total: rTotal }, 
+        email: emailStr, // 取代舊的 prompt，傳送勾選的信箱清單
+        dateRange: `${sVal} ~ ${eVal}`, summary: { count: rCount, net: rNet, tax: rTax, total: rTotal }, 
         clientStats: Object.keys(clientStats).map(k=>({name:k, total:clientStats[k]})).sort((a,b)=>b.total-a.total), 
         details: details.reverse(), lineItems: lines.reverse() 
     };
     
     callApi('exportExcelReport', payload).then(res => { 
-        hideLoading(); alert(`✅ 報表已寄送至 ${email}`); 
+        hideLoading(); showToast(`✅ 報表已成功寄送至所選信箱！`); 
     }).catch(err => { hideLoading(); alert("匯出失敗：" + err.message); });
 };
