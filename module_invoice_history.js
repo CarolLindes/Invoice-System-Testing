@@ -335,6 +335,9 @@ window.confirmSupplementInvoice = function() {
     .catch(err => { hideLoading(); alert("補登失敗：" + err.message); });
 };
 
+// ============================================================================
+// 出貨單列印 (已優化：日期淨化、訂單號碼移位、移除備考、加入安全縮排)
+// ============================================================================
 window.printDeliveryNote = function(idx) {
     const h = globalHistory.find(x => x.rowIdx === idx); 
     if (!h) return;
@@ -346,17 +349,27 @@ window.printDeliveryNote = function(idx) {
     if (items.length > 0) {
         items.forEach(item => {
             const inv = globalInventory.find(v => v.name === item.name);
-            const lotExp = inv ? `${inv.lot||''} ${inv.expiry||''}`.trim() : '';
+            
+            // 【日期淨化】把效期的台北標準時間轉換為乾淨的 YYYY/MM/DD
+            let expClean = '';
+            if (inv && inv.expiry) {
+                let d = new Date(inv.expiry);
+                if (!isNaN(d.getTime())) {
+                    expClean = `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
+                } else {
+                    expClean = inv.expiry; // 若為純文字則保留
+                }
+            }
+            const lotExp = inv ? `${inv.lot||''} ${expClean}`.trim() : '';
+
+            // 【版面優化】移除 td 裡面的訂單號碼
             tbodyHtml += `
                 <tr>
                     <td style="border: 1px solid #333; padding: 8px; text-align: left;">${item.name}</td>
                     <td style="border: 1px solid #333; padding: 8px; text-align: center;">${item.qty}</td>
                     <td style="border: 1px solid #333; padding: 8px; text-align: center;">0</td>
                     <td style="border: 1px solid #333; padding: 8px; text-align: right;">${Number(item.price).toLocaleString()}</td>
-                    <td style="border: 1px solid #333; padding: 8px; text-align: right;">
-                        ${Number(item.subtotal).toLocaleString()}<br>
-                        <span style="font-size: 11px; color: #555;">${item.orderNo || ''}</span>
-                    </td>
+                    <td style="border: 1px solid #333; padding: 8px; text-align: right;">${Number(item.subtotal).toLocaleString()}</td>
                     <td style="border: 1px solid #333; padding: 8px; text-align: center; font-size: 11px;">${lotExp}</td>
                 </tr>
             `;
@@ -365,7 +378,6 @@ window.printDeliveryNote = function(idx) {
         tbodyHtml = `<tr><td colspan="6" style="border: 1px solid #333; padding: 8px; text-align: center;">(無明細資料或為舊資料)</td></tr>`;
     }
 
-    // 【修改 1：加入 padding: 15mm 20mm 與 max-width 完美防裁切框架】
     const html = `
         <div style="max-width: 800px; margin: 0 auto; background: #fff; padding: 15mm 20mm; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000;">
             <table style="width: 100%; border: none; margin-bottom: 15px;">
@@ -373,6 +385,8 @@ window.printDeliveryNote = function(idx) {
                     <td style="width: 50%; vertical-align: top;">
                         <div style="font-weight: bold; font-size: 16px;">TO:</div>
                         <div style="font-weight: bold; font-size: 22px; margin-top: 5px; letter-spacing: 2px;">${h.client}</div>
+                        <!-- 【版面優化】將訂單號碼移至此處 -->
+                        <div style="margin-top: 10px; font-weight: bold; font-size: 15px; color: #d32f2f;">訂單號碼: ${escapeQuotes(h.orderNo || '無')}</div>
                     </td>
                     <td style="width: 50%; vertical-align: top; font-size: 14px; line-height: 1.6; text-align: right;">
                         <div style="font-weight: bold; font-size: 16px;">FROM: 長固實業有限公司</div>
@@ -391,7 +405,8 @@ window.printDeliveryNote = function(idx) {
                         <th style="border: 1px solid #333; padding: 8px; width: 60px; text-align: center;">數量</th>
                         <th style="border: 1px solid #333; padding: 8px; width: 60px; text-align: center;">欠貨</th>
                         <th style="border: 1px solid #333; padding: 8px; width: 80px; text-align: center;">單價</th>
-                        <th style="border: 1px solid #333; padding: 8px; width: 120px; text-align: center;">小計 客戶訂單號</th>
+                        <!-- 【版面優化】表頭移除「客戶訂單號」字樣 -->
+                        <th style="border: 1px solid #333; padding: 8px; width: 120px; text-align: center;">小計</th>
                         <th style="border: 1px solid #333; padding: 8px; width: 100px; text-align: center;">批號/效期</th>
                     </tr>
                 </thead>
@@ -410,9 +425,9 @@ window.printDeliveryNote = function(idx) {
             <div style="margin-top: 15px; font-size: 14px; line-height: 1.6;">
                 <p style="margin-bottom: 5px;">以上貨品數量及單價請查核.</p>
                 <p style="margin-bottom: 15px;">附發票號碼: <strong style="font-size: 16px;">${h.paperNo || ''}</strong></p>
-                <div style="display: flex; justify-content: space-between; margin-top: 30px;">
+                <div style="margin-top: 30px;">
+                    <!-- 【版面優化】移除備考，只留簽收線條 -->
                     <div style="width: 45%;">簽收: <span style="border-bottom: 1px solid #000; display: inline-block; width: 75%;">&nbsp;</span></div>
-                    <div style="width: 45%;">備考: <span style="border-bottom: 1px solid #000; display: inline-block; width: 75%;">&nbsp;</span></div>
                 </div>
             </div>
         </div>
@@ -521,13 +536,11 @@ window.generateReport = function() {
     document.getElementById('repTotal').innerText = `$${rTotal.toLocaleString()}`;
 };
 
-// 【修改 2：動態生成 Email 多選彈跳視窗，直接連動後台資料】
 window.exportReportToEmail = function() {
     const sVal = document.getElementById('repStart').value; 
     const eVal = document.getElementById('repEnd').value; 
     if(!sVal || !eVal) return alert("請先設定報表統計日期範圍！");
     
-    // 動態建立專屬的信箱選擇 Modal
     let modalEl = document.getElementById('dynamicEmailModal');
     if (!modalEl) {
         const modalHtml = `
@@ -574,7 +587,7 @@ window.confirmExportReport = function() {
     const emails = Array.from(cbs).map(cb => cb.value);
     if(emails.length === 0) return alert("請至少勾選一個收件信箱！");
     
-    const emailStr = emails.join(','); // 將多個信箱以逗號分隔傳遞給後端
+    const emailStr = emails.join(','); 
     
     const sVal = document.getElementById('repStart').value; 
     const eVal = document.getElementById('repEnd').value; 
@@ -604,7 +617,7 @@ window.confirmExportReport = function() {
     });
     
     const payload = { 
-        email: emailStr, // 取代舊的 prompt，傳送勾選的信箱清單
+        email: emailStr, 
         dateRange: `${sVal} ~ ${eVal}`, summary: { count: rCount, net: rNet, tax: rTax, total: rTotal }, 
         clientStats: Object.keys(clientStats).map(k=>({name:k, total:clientStats[k]})).sort((a,b)=>b.total-a.total), 
         details: details.reverse(), lineItems: lines.reverse() 
