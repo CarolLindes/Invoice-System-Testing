@@ -59,7 +59,6 @@ window.renderInventory = debounce(function() {
         
         if (v.qty <= v.alertQty) alertHTML = `<div class="small text-danger fw-bold mt-1">⚠️ 低於安全庫存 (${v.alertQty})</div>`;
         
-        // 處理 JSON 批號顯示邏輯
         let batches = [];
         try { batches = JSON.parse(v.batchesStr || '[]'); } catch(e){}
         let batchDisplay = '';
@@ -154,9 +153,6 @@ window.renderInvLogs = debounce(function() {
     }).join('');
 }, 300);
 
-// ============================================================================
-// 異動紀錄編輯器 (一般備註與發票修改)
-// ============================================================================
 window.openEditInvLogModal = function(idx) {
     const l = globalInvLogs.find(x => x.rowIdx === idx); 
     if(!l) return;
@@ -184,13 +180,14 @@ window.saveEditInvLog = function() {
     
     pushToSyncQueue('editInvLogRecord', { rowIdx: idx, invoiceNo, arrivalDate, orderNo, memo }, null);
     window.renderInvLogs();
-    bootstrap.Modal.getInstance(document.getElementById('editInvLogModal')).hide();
+    
+    const modalEl = document.getElementById('editInvLogModal');
+    const instance = bootstrap.Modal.getInstance(modalEl);
+    if(instance) instance.hide();
+    
     showToast("💾 異動紀錄備註已更新");
 };
 
-// ============================================================================
-// 修改出貨批號連動機制
-// ============================================================================
 window.openEditBatchModal = function(idx) {
     const l = globalInvLogs.find(x => x.rowIdx === idx);
     if (!l) return;
@@ -226,7 +223,10 @@ window.confirmEditBatch = function() {
     const newLot = select.value;
     const newExp = select.selectedIndex > 0 ? select.options[select.selectedIndex].getAttribute('data-exp') : '';
 
-    if (oldLot === newLot) return alert("新舊批號相同，無需修改。");
+    if (oldLot === newLot) {
+        showToast("⚠️ 新舊批號相同，無需修改。");
+        return;
+    }
 
     const payload = {
         logRowIdx: idx, name: itemName, changeQty: changeQty,
@@ -240,14 +240,14 @@ window.confirmEditBatch = function() {
         l.memo += `\n[批號已由 ${oldLot||'不分批'} 改為 ${newLot||'不分批'}]`;
     }
 
-    bootstrap.Modal.getInstance(document.getElementById('editBatchModal')).hide();
+    const modalEl = document.getElementById('editBatchModal');
+    const instance = bootstrap.Modal.getInstance(modalEl);
+    if(instance) instance.hide();
+
     showToast("🔄 批號修改完成，系統將自動返還並重新扣除指定庫存。");
     window.renderInvLogs();
 };
 
-// ============================================================================
-// 庫存進貨/盤點 (Adjust) - 【終極防呆版】
-// ============================================================================
 window.openAdjustModal = function(nameStr) {
     document.getElementById('adjInvoiceNo').value = ''; 
     document.getElementById('adjArrivalDate').value = getTodayStr(); 
@@ -296,13 +296,15 @@ window.selectProductForAdj = function(val) {
     } 
 };
 
-// 【終極修復】：加入 try...catch 捕捉所有潛在當機風險，並使用安全視窗關閉語法
+// 【核心修復點】全面改寫防呆機制與強制安全關閉邏輯
 window.saveInventoryAdjust = function() {
     try {
-        const idx = document.getElementById('adjRowIdx').value; 
         const name = document.getElementById('adjName').value.trim(); 
         const internalCode = document.getElementById('adjInternalCode').value.trim(); 
-        const changeQty = parseFloat(document.getElementById('adjQty').value); 
+        
+        let qtyInput = document.getElementById('adjQty').value;
+        const changeQty = qtyInput === "" ? 0 : parseFloat(qtyInput); // 允許空值或輸入 0 (方便單純修改單價或備註)
+        
         const alertQty = parseFloat(document.getElementById('adjAlert').value) || 0; 
         const cost = parseFloat(document.getElementById('adjCost').value) || 0; 
         const sup = document.getElementById('adjSup').value.trim(); 
@@ -313,8 +315,13 @@ window.saveInventoryAdjust = function() {
         const invoiceNo = document.getElementById('adjInvoiceNo').value.trim(); 
         const arrivalDate = document.getElementById('adjArrivalDate').value;
         
-        if(!name || isNaN(changeQty) || changeQty === 0) {
-            alert("請選定品名並輸入非零異動數量");
+        if(!name) {
+            showToast("⚠️ 請先選定要盤點的品名！");
+            return;
+        }
+        
+        if(isNaN(changeQty)) {
+            showToast("⚠️ 異動數量格式錯誤，請輸入數字！");
             return;
         }
         
@@ -324,33 +331,22 @@ window.saveInventoryAdjust = function() {
             invoiceNo: invoiceNo, arrivalDate: arrivalDate, staff: myName 
         };
         
-        let finalQty = changeQty;
-
-        // 尋找是否已有此商品 (防呆：即使是手動建檔，若名稱已存在也強制合併，避免報錯)
-        let existingItem = null;
-        if (idx) {
-            existingItem = globalInventory.find(x => String(x.rowIdx) === String(idx));
-        }
-        if (!existingItem) {
-            existingItem = globalInventory.find(x => x.name === name);
-        }
-
-        if(existingItem) { 
-            existingItem.qty += changeQty; 
-            existingItem.alertQty = alertQty; 
-            existingItem.cost = cost; 
-            existingItem.supplier = sup; 
-            if(internalCode) existingItem.internalCode = internalCode; 
+        const v = globalInventory.find(x => x.name === name);
+        let currentQty = 0;
+        
+        if(v) { 
+            v.qty += changeQty; v.alertQty = alertQty; v.cost = cost; v.supplier = sup; 
+            if(internalCode) v.internalCode = internalCode; 
             
             let batches = [];
-            try { batches = JSON.parse(existingItem.batchesStr || '[]'); } catch(e){}
+            try { batches = JSON.parse(v.batchesStr || '[]'); } catch(e){}
             if (lot || exp) {
                 let bIdx = batches.findIndex(b => b.lot === lot && b.exp === exp);
                 if (bIdx >= 0) batches[bIdx].qty += changeQty;
                 else batches.push({ lot: lot, exp: exp, qty: changeQty });
             }
-            existingItem.batchesStr = JSON.stringify(batches);
-            finalQty = existingItem.qty;
+            v.batchesStr = JSON.stringify(batches);
+            currentQty = v.qty;
         } else { 
             let newBatches = [];
             if (lot || exp) newBatches.push({ lot: lot, exp: exp, qty: changeQty });
@@ -358,11 +354,12 @@ window.saveInventoryAdjust = function() {
                 rowIdx: Date.now(), name: name, internalCode: internalCode, qty: changeQty, 
                 alertQty: alertQty, cost: cost, supplier: sup, batchesStr: JSON.stringify(newBatches)
             }); 
+            currentQty = changeQty;
         }
         
         globalInvLogs.unshift({
             time: Date.now(), staff: myName, name: name, type: type, qtyChange: changeQty, 
-            newQty: finalQty, 
+            newQty: currentQty, 
             lot: lot, invoiceNo: invoiceNo, arrivalDate: arrivalDate, memo: memo
         });
         
@@ -370,24 +367,30 @@ window.saveInventoryAdjust = function() {
         window.renderInventory(); 
         window.renderInvLogs(); 
         
-        // 【防呆修復】強制使用 getOrCreateInstance，確保絕對不會遇到 null 當機報錯
+        // 【暴力解鎖視窗機制】絕對不會因為報錯而卡死畫面
         const modalEl = document.getElementById('adjInvModal');
-        if (modalEl) {
-            bootstrap.Modal.getOrCreateInstance(modalEl).hide(); 
+        let modalInstance = bootstrap.Modal.getInstance(modalEl);
+        if(modalInstance) {
+            modalInstance.hide();
+        } else {
+            // 實體找不到時，直接用原生 JS 強制拔除遮罩
+            modalEl.classList.remove('show');
+            modalEl.style.display = 'none';
+            document.body.classList.remove('modal-open');
+            document.body.style.overflow = '';
+            document.body.style.paddingRight = '';
+            document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
         }
         
         pushToSyncQueue('adjustInventory', payload, null);
-        showToast("💾 庫存盤點異動已儲存");
-
-    } catch (err) {
-        console.error("盤點處理失敗", err);
-        alert("處理時發生錯誤，資料未能儲存：" + err.message);
+        showToast("💾 庫存盤點異動已儲存並同步");
+        
+    } catch (e) {
+        console.error("saveInventoryAdjust 發生錯誤:", e);
+        showToast("❌ 處理時發生系統錯誤：" + e.message);
     }
 };
 
-// ============================================================================
-// 欠貨出貨與批號連動選擇 (Shipment)
-// ============================================================================
 window.renderShipments = function() {
     const c = document.getElementById('stkShipContainer'); 
     const pending = globalSalesDetails.filter(s => s.shipStatus !== '已結案' && s.shipStatus !== '作廢');
@@ -419,7 +422,6 @@ window.openShipModal = function(rowIdx) {
     document.getElementById('shipNowQty').value = remain; 
     document.getElementById('shipNowQty').max = remain;
 
-    // 載入批號清單
     const inv = globalInventory.find(x => x.name === s.name);
     const batchSelect = document.getElementById('shipBatchSelect');
     batchSelect.innerHTML = '';
@@ -491,9 +493,11 @@ window.confirmShipment = function() {
     
     if(typeof window.populateLogDropdowns === 'function') window.populateLogDropdowns(); 
     window.renderInvLogs(); window.renderInventory(); window.renderShipments(); 
-    bootstrap.Modal.getInstance(document.getElementById('shipModal')).hide(); 
     
-    // 加入背景同步佇列
+    const modalEl = document.getElementById('shipModal');
+    const instance = bootstrap.Modal.getInstance(modalEl);
+    if(instance) instance.hide();
+    
     pushToSyncQueue('updateShipment', {
         updates: [{rowIdx: rowIdx, paperNo: s.paperNo, client: s.client, name: s.name, shipQty: qty, totalQty: s.qty, batchTarget: batchTarget}], 
         staff: myName
@@ -502,9 +506,6 @@ window.confirmShipment = function() {
     showToast("🚚 出貨與庫存扣抵完成，已自動排程至送貨追蹤表單");
 };
 
-// ============================================================================
-// 向廠商訂貨 (PO)
-// ============================================================================
 window.triggerPoClientChange = function(clientName) {
     const cObj = globalClients.find(x => x.name === clientName);
     document.getElementById('poAddress').value = cObj ? (cObj.address || '') : '';
@@ -625,7 +626,10 @@ window.confirmPurchaseOrder = function() {
 
     pushToSyncQueue('submitPurchaseOrder', payload, null);
     window.renderInvLogs();
-    bootstrap.Modal.getInstance(document.getElementById('purchaseOrderModal')).hide();
+    
+    const modalEl = document.getElementById('purchaseOrderModal');
+    const instance = bootstrap.Modal.getInstance(modalEl);
+    if(instance) instance.hide();
     
     showToast("🛒 訂貨單已記錄！即將列印...");
     setTimeout(() => { window.printPurchaseOrder(snapData); }, 500);
@@ -707,9 +711,6 @@ window.printPurchaseOrder = function(data) {
     }
 };
 
-// ============================================================================
-// 管理員後台 (Admin) 模組
-// ============================================================================
 window.openSearchModal = function(type, callback) {
     currentSearchCallback = callback; 
     document.getElementById('searchModalList').innerHTML = ''; 
@@ -731,7 +732,7 @@ window.openSearchModal = function(type, callback) {
         else if(type.startsWith('item_quo_')) clientName = document.getElementById('e_quoClient').value; 
         else clientName = document.getElementById('invClientInput').value; 
         
-        if(!clientName) { alert('請先選擇客戶！'); return; } 
+        if(!clientName) { showToast('⚠️ 請先選擇客戶！'); return; } 
         currentSearchSource = globalCatalog.filter(p => p.clientName === clientName).map((p, idx) => ({ text: p.productName, sub: `單價: $${p.price} / ${p.unit}`, val: p.productName, idx: idx, ref: p })); 
     }
     
@@ -750,7 +751,10 @@ window.renderSearchList = function(arr) {
 };
 
 window.onSearchSelect = function(val) { 
-    bootstrap.Modal.getInstance(document.getElementById('searchModal')).hide(); 
+    const modalEl = document.getElementById('searchModal');
+    const instance = bootstrap.Modal.getInstance(modalEl);
+    if(instance) instance.hide();
+    
     if(currentSearchCallback) currentSearchCallback(val); 
 };
 
@@ -783,12 +787,16 @@ window.submitNewClientOptimistic = function() {
     const taxId = document.getElementById('addClientTaxId').value.trim(); 
     const address = document.getElementById('addClientAddress').value.trim(); 
     const receiveDept = document.getElementById('addClientReceiveDept').value.trim(); 
-    if(!name) return alert('名稱必填'); 
+    if(!name) return showToast('⚠️ 客戶名稱為必填'); 
     
     globalClients.push({ name, taxId, address, receiveDept }); 
     if(typeof window.populateAdminClientFilter === 'function') window.populateAdminClientFilter(); 
     window.renderAdminClients(); 
-    bootstrap.Modal.getInstance(document.getElementById('addClientModal')).hide(); 
+    
+    const modalEl = document.getElementById('addClientModal');
+    const instance = bootstrap.Modal.getInstance(modalEl);
+    if(instance) instance.hide();
+    
     pushToSyncQueue('addClientData', {clientName: name, taxId, address, receiveDept}, null); 
 };
 
@@ -808,7 +816,7 @@ window.submitEditClientOptimistic = function() {
     const tax = document.getElementById('editClientTaxId').value.trim(); 
     const address = document.getElementById('editClientAddress').value.trim(); 
     const receiveDept = document.getElementById('editClientReceiveDept').value.trim(); 
-    if(!name) return; 
+    if(!name) return showToast('⚠️ 客戶名稱為必填'); 
     
     const c = globalClients.find(x => x.name === old); 
     if(c) { c.name = name; c.taxId = tax; c.address = address; c.receiveDept = receiveDept; } 
@@ -816,7 +824,11 @@ window.submitEditClientOptimistic = function() {
     
     if(typeof window.populateAdminClientFilter === 'function') window.populateAdminClientFilter(); 
     window.renderAdminClients(); window.renderAdminItems(); 
-    bootstrap.Modal.getInstance(document.getElementById('editClientModal')).hide(); 
+    
+    const modalEl = document.getElementById('editClientModal');
+    const instance = bootstrap.Modal.getInstance(modalEl);
+    if(instance) instance.hide();
+    
     pushToSyncQueue('updateClientData', {oldName: old, newName: name, newTaxId: tax, address, receiveDept}, null); 
 };
 
@@ -856,7 +868,10 @@ window.openAdminItemModal = function(idx) {
 };
 
 window.triggerItemClientSelect = function() { 
-    bootstrap.Modal.getInstance(document.getElementById('editItemModal')).hide(); 
+    const modalEl = document.getElementById('editItemModal');
+    const instance = bootstrap.Modal.getInstance(modalEl);
+    if(instance) instance.hide();
+    
     window.openSearchModal('admin_client', (val) => { 
         document.getElementById('editItemClientDisplay').value = val; 
         document.getElementById('editItemClientVal').value = val; 
@@ -872,7 +887,7 @@ window.submitEditItemOptimistic = function() {
     const unit = document.getElementById('editItemUnit').value.trim(); 
     const price = document.getElementById('editItemPrice').value; 
     
-    if(!client || !name || !price) return alert('必填未填'); 
+    if(!client || !name || !price) return showToast('⚠️ 必填欄位未填妥'); 
     
     const payload = { 
         rowIndex: idx ? parseInt(idx) : null, 
@@ -898,7 +913,11 @@ window.submitEditItemOptimistic = function() {
     } 
     
     window.renderAdminItems(); 
-    bootstrap.Modal.getInstance(document.getElementById('editItemModal')).hide(); 
+    
+    const modalEl = document.getElementById('editItemModal');
+    const instance = bootstrap.Modal.getInstance(modalEl);
+    if(instance) instance.hide();
     
     pushToSyncQueue('saveAdminItem', payload, null); 
+    showToast('💾 報價品項已儲存');
 };
