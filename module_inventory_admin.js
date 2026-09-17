@@ -59,7 +59,7 @@ window.renderInventory = debounce(function() {
         
         if (v.qty <= v.alertQty) alertHTML = `<div class="small text-danger fw-bold mt-1">⚠️ 低於安全庫存 (${v.alertQty})</div>`;
         
-        // 【升級】處理 JSON 批號顯示邏輯
+        // 處理 JSON 批號顯示邏輯
         let batches = [];
         try { batches = JSON.parse(v.batchesStr || '[]'); } catch(e){}
         let batchDisplay = '';
@@ -134,7 +134,7 @@ window.renderInvLogs = debounce(function() {
             actionBtns = `<button class="btn btn-sm btn-outline-info fw-bold me-1 text-dark" onclick="reprintPurchaseOrderFast(${l.rowIdx})">🖨️ 列印訂貨單</button>` + actionBtns;
         }
 
-        // 【升級】若是出貨，新增修改批號按鈕
+        // 若是出貨，新增修改批號按鈕
         if (l.type === "分批出貨") {
             actionBtns = `<button class="btn btn-sm btn-outline-warning fw-bold me-1 text-dark" onclick="openEditBatchModal(${l.rowIdx})">🔄 修改批號</button>` + actionBtns;
         }
@@ -190,7 +190,7 @@ window.saveEditInvLog = function() {
 };
 
 // ============================================================================
-// 【全新】修改出貨批號連動機制
+// 修改出貨批號連動機制
 // ============================================================================
 window.openEditBatchModal = function(idx) {
     const l = globalInvLogs.find(x => x.rowIdx === idx);
@@ -354,9 +354,13 @@ window.saveInventoryAdjust = function() {
     if(typeof window.populateLogDropdowns === 'function') window.populateLogDropdowns(); 
     window.renderInventory(); 
     window.renderInvLogs(); 
-    bootstrap.Modal.getInstance(document.getElementById('adjInvModal')).show(); // Wait, meant to hide.
-    bootstrap.Modal.getInstance(document.getElementById('adjInvModal')).hide(); 
+    
+    // 【修復】解決連續兩次彈跳視窗呼叫導致當機的問題
+    const modalInst = bootstrap.Modal.getInstance(document.getElementById('adjInvModal'));
+    if(modalInst) modalInst.hide();
+    
     pushToSyncQueue('adjustInventory', payload, null);
+    showToast("💾 異動已記錄");
 };
 
 // ============================================================================
@@ -393,7 +397,6 @@ window.openShipModal = function(rowIdx) {
     document.getElementById('shipNowQty').value = remain; 
     document.getElementById('shipNowQty').max = remain;
 
-    // 【升級】載入批號清單
     const inv = globalInventory.find(x => x.name === s.name);
     const batchSelect = document.getElementById('shipBatchSelect');
     batchSelect.innerHTML = '';
@@ -467,9 +470,9 @@ window.confirmShipment = function() {
     window.renderInvLogs(); window.renderInventory(); window.renderShipments(); 
     bootstrap.Modal.getInstance(document.getElementById('shipModal')).hide(); 
     
-    // 加入背景同步佇列
+    // 【修復】確保 orderNo 與所有所需資訊都有精準封裝傳送
     pushToSyncQueue('updateShipment', {
-        updates: [{rowIdx: rowIdx, paperNo: s.paperNo, client: s.client, name: s.name, shipQty: qty, totalQty: s.qty, batchTarget: batchTarget}], 
+        updates: [{rowIdx: rowIdx, paperNo: s.paperNo, orderNo: s.orderNo, client: s.client, name: s.name, shipQty: qty, totalQty: s.qty, batchTarget: batchTarget}], 
         staff: myName
     }, null); 
     
