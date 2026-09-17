@@ -59,7 +59,7 @@ window.renderInventory = debounce(function() {
         
         if (v.qty <= v.alertQty) alertHTML = `<div class="small text-danger fw-bold mt-1">⚠️ 低於安全庫存 (${v.alertQty})</div>`;
         
-        // 【升級】處理 JSON 批號顯示邏輯
+        // 處理 JSON 批號顯示邏輯
         let batches = [];
         try { batches = JSON.parse(v.batchesStr || '[]'); } catch(e){}
         let batchDisplay = '';
@@ -134,7 +134,6 @@ window.renderInvLogs = debounce(function() {
             actionBtns = `<button class="btn btn-sm btn-outline-info fw-bold me-1 text-dark" onclick="reprintPurchaseOrderFast(${l.rowIdx})">🖨️ 列印訂貨單</button>` + actionBtns;
         }
 
-        // 【升級】若是出貨，新增修改批號按鈕
         if (l.type === "分批出貨") {
             actionBtns = `<button class="btn btn-sm btn-outline-warning fw-bold me-1 text-dark" onclick="openEditBatchModal(${l.rowIdx})">🔄 修改批號</button>` + actionBtns;
         }
@@ -190,7 +189,7 @@ window.saveEditInvLog = function() {
 };
 
 // ============================================================================
-// 【全新】修改出貨批號連動機制
+// 修改出貨批號連動機制
 // ============================================================================
 window.openEditBatchModal = function(idx) {
     const l = globalInvLogs.find(x => x.rowIdx === idx);
@@ -247,7 +246,7 @@ window.confirmEditBatch = function() {
 };
 
 // ============================================================================
-// 庫存進貨/盤點 (Adjust)
+// 庫存進貨/盤點 (Adjust) - 【終極防呆版】
 // ============================================================================
 window.openAdjustModal = function(nameStr) {
     document.getElementById('adjInvoiceNo').value = ''; 
@@ -297,69 +296,93 @@ window.selectProductForAdj = function(val) {
     } 
 };
 
+// 【終極修復】：加入 try...catch 捕捉所有潛在當機風險，並使用安全視窗關閉語法
 window.saveInventoryAdjust = function() {
-    const idx = document.getElementById('adjRowIdx').value; 
-    const name = document.getElementById('adjName').value.trim(); 
-    const internalCode = document.getElementById('adjInternalCode').value.trim(); 
-    const changeQty = parseFloat(document.getElementById('adjQty').value); 
-    const alertQty = parseFloat(document.getElementById('adjAlert').value) || 0; 
-    const cost = parseFloat(document.getElementById('adjCost').value) || 0; 
-    const sup = document.getElementById('adjSup').value.trim(); 
-    const lot = document.getElementById('adjLot').value.trim(); 
-    const exp = document.getElementById('adjExp').value; 
-    const type = document.getElementById('adjType').value; 
-    const memo = document.getElementById('adjMemo').value.trim();
-    const invoiceNo = document.getElementById('adjInvoiceNo').value.trim(); 
-    const arrivalDate = document.getElementById('adjArrivalDate').value;
-    
-    if(!name || isNaN(changeQty) || changeQty === 0) return alert("請選定品名並輸入非零異動數量");
-    
-    const payload = { 
-        name: name, internalCode: internalCode, changeQty: changeQty, alertQty: alertQty, 
-        cost: cost, supplier: sup, lot: lot, expiry: exp, type: type, memo: memo, 
-        invoiceNo: invoiceNo, arrivalDate: arrivalDate, staff: myName 
-    };
-    
-    // Optimistic UI Update (JSON Batches)
-    if(idx) { 
-        const v = globalInventory.find(x => x.rowIdx === parseInt(idx)); 
-        if(v) { 
-            v.qty += changeQty; v.alertQty = alertQty; v.cost = cost; v.supplier = sup; 
-            if(internalCode) v.internalCode = internalCode; 
+    try {
+        const idx = document.getElementById('adjRowIdx').value; 
+        const name = document.getElementById('adjName').value.trim(); 
+        const internalCode = document.getElementById('adjInternalCode').value.trim(); 
+        const changeQty = parseFloat(document.getElementById('adjQty').value); 
+        const alertQty = parseFloat(document.getElementById('adjAlert').value) || 0; 
+        const cost = parseFloat(document.getElementById('adjCost').value) || 0; 
+        const sup = document.getElementById('adjSup').value.trim(); 
+        const lot = document.getElementById('adjLot').value.trim(); 
+        const exp = document.getElementById('adjExp').value; 
+        const type = document.getElementById('adjType').value; 
+        const memo = document.getElementById('adjMemo').value.trim();
+        const invoiceNo = document.getElementById('adjInvoiceNo').value.trim(); 
+        const arrivalDate = document.getElementById('adjArrivalDate').value;
+        
+        if(!name || isNaN(changeQty) || changeQty === 0) {
+            alert("請選定品名並輸入非零異動數量");
+            return;
+        }
+        
+        const payload = { 
+            name: name, internalCode: internalCode, changeQty: changeQty, alertQty: alertQty, 
+            cost: cost, supplier: sup, lot: lot, expiry: exp, type: type, memo: memo, 
+            invoiceNo: invoiceNo, arrivalDate: arrivalDate, staff: myName 
+        };
+        
+        let finalQty = changeQty;
+
+        // 尋找是否已有此商品 (防呆：即使是手動建檔，若名稱已存在也強制合併，避免報錯)
+        let existingItem = null;
+        if (idx) {
+            existingItem = globalInventory.find(x => String(x.rowIdx) === String(idx));
+        }
+        if (!existingItem) {
+            existingItem = globalInventory.find(x => x.name === name);
+        }
+
+        if(existingItem) { 
+            existingItem.qty += changeQty; 
+            existingItem.alertQty = alertQty; 
+            existingItem.cost = cost; 
+            existingItem.supplier = sup; 
+            if(internalCode) existingItem.internalCode = internalCode; 
             
             let batches = [];
-            try { batches = JSON.parse(v.batchesStr || '[]'); } catch(e){}
+            try { batches = JSON.parse(existingItem.batchesStr || '[]'); } catch(e){}
             if (lot || exp) {
                 let bIdx = batches.findIndex(b => b.lot === lot && b.exp === exp);
                 if (bIdx >= 0) batches[bIdx].qty += changeQty;
                 else batches.push({ lot: lot, exp: exp, qty: changeQty });
             }
-            v.batchesStr = JSON.stringify(batches);
-        } 
-    } else { 
-        let newBatches = [];
-        if (lot || exp) newBatches.push({ lot: lot, exp: exp, qty: changeQty });
-        globalInventory.push({
-            rowIdx: Date.now(), name: name, internalCode: internalCode, qty: changeQty, 
-            alertQty: alertQty, cost: cost, supplier: sup, batchesStr: JSON.stringify(newBatches)
-        }); 
+            existingItem.batchesStr = JSON.stringify(batches);
+            finalQty = existingItem.qty;
+        } else { 
+            let newBatches = [];
+            if (lot || exp) newBatches.push({ lot: lot, exp: exp, qty: changeQty });
+            globalInventory.push({
+                rowIdx: Date.now(), name: name, internalCode: internalCode, qty: changeQty, 
+                alertQty: alertQty, cost: cost, supplier: sup, batchesStr: JSON.stringify(newBatches)
+            }); 
+        }
+        
+        globalInvLogs.unshift({
+            time: Date.now(), staff: myName, name: name, type: type, qtyChange: changeQty, 
+            newQty: finalQty, 
+            lot: lot, invoiceNo: invoiceNo, arrivalDate: arrivalDate, memo: memo
+        });
+        
+        if(typeof window.populateLogDropdowns === 'function') window.populateLogDropdowns(); 
+        window.renderInventory(); 
+        window.renderInvLogs(); 
+        
+        // 【防呆修復】強制使用 getOrCreateInstance，確保絕對不會遇到 null 當機報錯
+        const modalEl = document.getElementById('adjInvModal');
+        if (modalEl) {
+            bootstrap.Modal.getOrCreateInstance(modalEl).hide(); 
+        }
+        
+        pushToSyncQueue('adjustInventory', payload, null);
+        showToast("💾 庫存盤點異動已儲存");
+
+    } catch (err) {
+        console.error("盤點處理失敗", err);
+        alert("處理時發生錯誤，資料未能儲存：" + err.message);
     }
-    
-    globalInvLogs.unshift({
-        time: Date.now(), staff: myName, name: name, type: type, qtyChange: changeQty, 
-        newQty: idx ? globalInventory.find(x => x.rowIdx === parseInt(idx)).qty : changeQty, 
-        lot: lot, invoiceNo: invoiceNo, arrivalDate: arrivalDate, memo: memo
-    });
-    
-    if(typeof window.populateLogDropdowns === 'function') window.populateLogDropdowns(); 
-    window.renderInventory(); 
-    window.renderInvLogs(); 
-    
-    // 【修復】移除錯誤的 .show()，確保彈跳視窗平順關閉
-    bootstrap.Modal.getInstance(document.getElementById('adjInvModal')).hide(); 
-    
-    pushToSyncQueue('adjustInventory', payload, null);
-    showToast("💾 庫存盤點異動已儲存");
 };
 
 // ============================================================================
@@ -396,7 +419,7 @@ window.openShipModal = function(rowIdx) {
     document.getElementById('shipNowQty').value = remain; 
     document.getElementById('shipNowQty').max = remain;
 
-    // 【升級】載入批號清單
+    // 載入批號清單
     const inv = globalInventory.find(x => x.name === s.name);
     const batchSelect = document.getElementById('shipBatchSelect');
     batchSelect.innerHTML = '';
