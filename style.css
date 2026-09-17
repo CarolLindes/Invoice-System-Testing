@@ -34,6 +34,7 @@ html, body {
 .home-card:active { transform: scale(0.97); }
 .c-inv { border-bottom-color: #0d6efd; } .c-ord { border-bottom-color: #ffc107; } .c-stk { border-bottom-color: #0dcaf0; grid-column: span 2; } .c-rep { border-bottom-color: #198754; grid-column: span 2; } .c-mgr { border-bottom-color: #dc3545; grid-column: span 2; }
 .c-quo { border-bottom-color: #6f42c1; grid-column: span 2; }
+
 /* 【新增】送貨追蹤模組卡片顏色 */
 .c-dlv { border-bottom-color: #fd7e14; grid-column: span 2; }
 
