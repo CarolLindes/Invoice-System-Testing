@@ -354,9 +354,12 @@ window.saveInventoryAdjust = function() {
     if(typeof window.populateLogDropdowns === 'function') window.populateLogDropdowns(); 
     window.renderInventory(); 
     window.renderInvLogs(); 
-    bootstrap.Modal.getInstance(document.getElementById('adjInvModal')).show(); // Wait, meant to hide.
+    
+    // 【修復】移除錯誤的 .show()，確保彈跳視窗平順關閉
     bootstrap.Modal.getInstance(document.getElementById('adjInvModal')).hide(); 
+    
     pushToSyncQueue('adjustInventory', payload, null);
+    showToast("💾 庫存盤點異動已儲存");
 };
 
 // ============================================================================
@@ -876,4 +879,3 @@ window.submitEditItemOptimistic = function() {
     
     pushToSyncQueue('saveAdminItem', payload, null); 
 };
-
