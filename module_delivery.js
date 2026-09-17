@@ -284,8 +284,19 @@ function buildDeliveryPrintHtml(idx, isPreviewMode) {
 
     let items = []; try { items = JSON.parse(d.itemsStr); } catch(e){}
     
-    // 計算單號與排版空間
-    const dateStr = d.deliveryDate ? d.deliveryDate.replace(/-/g, '/') : getTodayStr().replace(/-/g, '/');
+    // 【優化 1】將時間格式轉換為純淨的 YYYY/M/D 格式
+    let dateStr = d.deliveryDate ? d.deliveryDate : getTodayStr();
+    let dObj = new Date(dateStr);
+    if (!isNaN(dObj.getTime())) {
+        dateStr = `${dObj.getFullYear()}/${dObj.getMonth() + 1}/${dObj.getDate()}`;
+    } else {
+        dateStr = dateStr.replace(/-/g, '/');
+    }
+
+    // 【優化 2】透過發票號碼去歷史紀錄反查真實的「訂單號碼」
+    const hRec = globalHistory.find(x => x.paperNo === d.paperNo && d.paperNo !== '');
+    const actualOrderNo = hRec && hRec.orderNo ? hRec.orderNo : '';
+
     let totalAmount = 0;
     const totalRows = Math.max(items.length, 5); // 至少保留 5 行的空間讓版面好看
 
@@ -344,8 +355,10 @@ function buildDeliveryPrintHtml(idx, isPreviewMode) {
 
             <!-- 客戶與日期 -->
             <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px; font-size: 16px; font-weight: bold;">
-                <div style="width: 60%;">客 戶 名 稱：<span style="border-bottom: 1px solid #000; display: inline-block; width: 70%; padding-bottom: 2px;">${escapeQuotes(d.client)}</span></div>
-                <div style="width: 30%; text-align: right;">${dateStr.split('/')[0]} 年 ${dateStr.split('/')[1]} 月 ${dateStr.split('/')[2]} 日</div>
+                <div style="width: 60%;">客 戶 名 稱：<span style="border-bottom: 1px solid #000; display: inline-block; width: 70%; padding-bottom: 2px;">${escapeQuotes(d.client)}</span>
+                    <div style="margin-top: 5px; font-size: 14px; font-weight: bold; color: #d32f2f;">訂單號碼：${escapeQuotes(actualOrderNo || '無')}</div>
+                </div>
+                <div style="width: 30%; text-align: right;">${dateStr}</div>
             </div>
 
             <!-- 核心明細表格 -->
@@ -382,4 +395,3 @@ function getSignatureImgHtml(deliveryObj) {
     }
     return '';
 }
-
