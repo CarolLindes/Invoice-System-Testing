@@ -627,3 +627,4 @@ window.confirmExportReport = function() {
         hideLoading(); showToast(`✅ 報表已成功寄送至所選信箱！`); 
     }).catch(err => { hideLoading(); alert("匯出失敗：" + err.message); });
 };
+
