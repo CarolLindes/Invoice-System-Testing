@@ -82,12 +82,12 @@ function triggerSync() {
     const task = bgSyncQueue[0];
     
     clearTimeout(syncTimeoutTimer);
-    // 延長 timeout 到 40 秒，避免與 GAS 執行上限衝突導致假性超時
+    // 【優化】將 timeout 縮短到 28 秒，提早攔截 Google 30 秒的硬性超時限制
     syncTimeoutTimer = setTimeout(() => {
-        console.warn("同步超時，準備於背景重試", task.action);
+        console.warn("同步超時(已達28秒)，準備於背景重試", task.action);
         task.retry += 1;
         handleSyncRetry(task);
-    }, 40000);
+    }, 28000);
 
     callApi(task.action, task.payload).then(res => {
         clearTimeout(syncTimeoutTimer);
@@ -403,7 +403,8 @@ window.closePrintPreview = function() {
             el.style.width = '';
             el.style.overflowX = '';
             el.style.padding = '';
-            el.innerHTML = ''; // 清空 DOM 內容，徹底釋放記憶體
+            // 【優化】使用 replaceChildren() 徹底且安全地清空 DOM 節點，防止事件監聽器殘留
+            el.replaceChildren(); 
         }
     });
     
@@ -602,4 +603,3 @@ window.enterSystem = function(modId) {
 };
 
 window.backToHome = function() { document.getElementById('mainApp').style.display = 'none'; document.getElementById('homeMenu').style.display = 'block'; };
-
