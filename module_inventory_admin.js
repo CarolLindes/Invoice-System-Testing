@@ -59,7 +59,6 @@ window.renderInventory = debounce(function() {
         
         if (v.qty <= v.alertQty) alertHTML = `<div class="small text-danger fw-bold mt-1">⚠️ 低於安全庫存 (${v.alertQty})</div>`;
         
-        // 【升級】處理 JSON 批號顯示邏輯
         let batches = [];
         try { batches = JSON.parse(v.batchesStr || '[]'); } catch(e){}
         let batchDisplay = '';
@@ -134,7 +133,6 @@ window.renderInvLogs = debounce(function() {
             actionBtns = `<button class="btn btn-sm btn-outline-info fw-bold me-1 text-dark" onclick="reprintPurchaseOrderFast(${l.rowIdx})">🖨️ 列印訂貨單</button>` + actionBtns;
         }
 
-        // 【升級】若是出貨，新增修改批號按鈕
         if (l.type === "分批出貨") {
             actionBtns = `<button class="btn btn-sm btn-outline-warning fw-bold me-1 text-dark" onclick="openEditBatchModal(${l.rowIdx})">🔄 修改批號</button>` + actionBtns;
         }
@@ -185,12 +183,12 @@ window.saveEditInvLog = function() {
     
     pushToSyncQueue('editInvLogRecord', { rowIdx: idx, invoiceNo, arrivalDate, orderNo, memo }, null);
     window.renderInvLogs();
-    bootstrap.Modal.getInstance(document.getElementById('editInvLogModal')).hide();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('editInvLogModal')).hide();
     showToast("💾 異動紀錄備註已更新");
 };
 
 // ============================================================================
-// 【全新】修改出貨批號連動機制
+// 修改出貨批號連動機制
 // ============================================================================
 window.openEditBatchModal = function(idx) {
     const l = globalInvLogs.find(x => x.rowIdx === idx);
@@ -241,7 +239,7 @@ window.confirmEditBatch = function() {
         l.memo += `\n[批號已由 ${oldLot||'不分批'} 改為 ${newLot||'不分批'}]`;
     }
 
-    bootstrap.Modal.getInstance(document.getElementById('editBatchModal')).hide();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('editBatchModal')).hide();
     showToast("🔄 批號修改完成，系統將自動返還並重新扣除指定庫存。");
     window.renderInvLogs();
 };
@@ -295,6 +293,17 @@ window.selectProductForAdj = function(val) {
             }
         }
     } 
+    
+    // 【修復】檢查是否已存在庫存清單中，若有則自動帶入 rowIdx 與其他既有參數
+    const existingInv = globalInventory.find(x => x.name === val);
+    if (existingInv) {
+        document.getElementById('adjRowIdx').value = existingInv.rowIdx;
+        document.getElementById('adjAlert').value = existingInv.alertQty || 0;
+        document.getElementById('adjCost').value = existingInv.cost || 0;
+        if (existingInv.supplier) document.getElementById('adjSup').value = existingInv.supplier;
+    } else {
+        document.getElementById('adjRowIdx').value = '';
+    }
 };
 
 window.saveInventoryAdjust = function() {
@@ -319,12 +328,15 @@ window.saveInventoryAdjust = function() {
         cost: cost, supplier: sup, lot: lot, expiry: exp, type: type, memo: memo, 
         invoiceNo: invoiceNo, arrivalDate: arrivalDate, staff: myName 
     };
-    
-    // Optimistic UI Update (JSON Batches)
+
+    let currentNewQty = changeQty; // 【修復】獨立安全變數
+
     if(idx) { 
         const v = globalInventory.find(x => x.rowIdx === parseInt(idx)); 
         if(v) { 
-            v.qty += changeQty; v.alertQty = alertQty; v.cost = cost; v.supplier = sup; 
+            v.qty += changeQty; 
+            currentNewQty = v.qty; // 使用安全變數取代危險的 find().qty
+            v.alertQty = alertQty; v.cost = cost; v.supplier = sup; 
             if(internalCode) v.internalCode = internalCode; 
             
             let batches = [];
@@ -347,14 +359,14 @@ window.saveInventoryAdjust = function() {
     
     globalInvLogs.unshift({
         time: Date.now(), staff: myName, name: name, type: type, qtyChange: changeQty, 
-        newQty: idx ? globalInventory.find(x => x.rowIdx === parseInt(idx)).qty : changeQty, 
+        newQty: currentNewQty, 
         lot: lot, invoiceNo: invoiceNo, arrivalDate: arrivalDate, memo: memo
     });
     
     if(typeof window.populateLogDropdowns === 'function') window.populateLogDropdowns(); 
     window.renderInventory(); 
     window.renderInvLogs(); 
-    bootstrap.Modal.getInstance(document.getElementById('adjInvModal')).hide(); 
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('adjInvModal')).hide(); // 【修復】絕對安全的視窗關閉機制
     pushToSyncQueue('adjustInventory', payload, null);
 };
 
@@ -392,7 +404,6 @@ window.openShipModal = function(rowIdx) {
     document.getElementById('shipNowQty').value = remain; 
     document.getElementById('shipNowQty').max = remain;
 
-    // 【升級】載入批號清單
     const inv = globalInventory.find(x => x.name === s.name);
     const batchSelect = document.getElementById('shipBatchSelect');
     batchSelect.innerHTML = '';
@@ -464,9 +475,8 @@ window.confirmShipment = function() {
     
     if(typeof window.populateLogDropdowns === 'function') window.populateLogDropdowns(); 
     window.renderInvLogs(); window.renderInventory(); window.renderShipments(); 
-    bootstrap.Modal.getInstance(document.getElementById('shipModal')).hide(); 
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('shipModal')).hide(); 
     
-    // 加入背景同步佇列
     pushToSyncQueue('updateShipment', {
         updates: [{rowIdx: rowIdx, paperNo: s.paperNo, client: s.client, name: s.name, shipQty: qty, totalQty: s.qty, batchTarget: batchTarget}], 
         staff: myName
@@ -598,7 +608,7 @@ window.confirmPurchaseOrder = function() {
 
     pushToSyncQueue('submitPurchaseOrder', payload, null);
     window.renderInvLogs();
-    bootstrap.Modal.getInstance(document.getElementById('purchaseOrderModal')).hide();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('purchaseOrderModal')).hide();
     
     showToast("🛒 訂貨單已記錄！即將列印...");
     setTimeout(() => { window.printPurchaseOrder(snapData); }, 500);
@@ -723,7 +733,7 @@ window.renderSearchList = function(arr) {
 };
 
 window.onSearchSelect = function(val) { 
-    bootstrap.Modal.getInstance(document.getElementById('searchModal')).hide(); 
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('searchModal')).hide(); 
     if(currentSearchCallback) currentSearchCallback(val); 
 };
 
@@ -761,7 +771,7 @@ window.submitNewClientOptimistic = function() {
     globalClients.push({ name, taxId, address, receiveDept }); 
     if(typeof window.populateAdminClientFilter === 'function') window.populateAdminClientFilter(); 
     window.renderAdminClients(); 
-    bootstrap.Modal.getInstance(document.getElementById('addClientModal')).hide(); 
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('addClientModal')).hide(); 
     pushToSyncQueue('addClientData', {clientName: name, taxId, address, receiveDept}, null); 
 };
 
@@ -789,7 +799,7 @@ window.submitEditClientOptimistic = function() {
     
     if(typeof window.populateAdminClientFilter === 'function') window.populateAdminClientFilter(); 
     window.renderAdminClients(); window.renderAdminItems(); 
-    bootstrap.Modal.getInstance(document.getElementById('editClientModal')).hide(); 
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('editClientModal')).hide(); 
     pushToSyncQueue('updateClientData', {oldName: old, newName: name, newTaxId: tax, address, receiveDept}, null); 
 };
 
@@ -829,7 +839,7 @@ window.openAdminItemModal = function(idx) {
 };
 
 window.triggerItemClientSelect = function() { 
-    bootstrap.Modal.getInstance(document.getElementById('editItemModal')).hide(); 
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('editItemModal')).hide(); 
     window.openSearchModal('admin_client', (val) => { 
         document.getElementById('editItemClientDisplay').value = val; 
         document.getElementById('editItemClientVal').value = val; 
@@ -871,7 +881,7 @@ window.submitEditItemOptimistic = function() {
     } 
     
     window.renderAdminItems(); 
-    bootstrap.Modal.getInstance(document.getElementById('editItemModal')).hide(); 
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('editItemModal')).hide(); 
     
     pushToSyncQueue('saveAdminItem', payload, null); 
 };
