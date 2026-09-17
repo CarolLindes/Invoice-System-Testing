@@ -51,14 +51,14 @@
     <div class="marquee-container shadow-sm">
       <div class="marquee-content" id="lobbyMarquee">
         <span class="mx-3">🟢 連線正常</span><span class="mx-3" id="mqOnline">👥 1 人</span>
-        <span class="mx-3">💡 系統效能、批號管理與物流模組全面升級完成</span><span class="mx-3 text-primary" id="mqMonthCount">🧾 本月已開立 0 張</span>
+        <span class="mx-3">💡 系統效能、估價單模組與合併拆分機制優化完成</span><span class="mx-3 text-primary" id="mqMonthCount">🧾 本月已開立 0 張</span>
       </div>
     </div>
     <div class="home-grid">
       <div class="home-card c-ord" onclick="enterSystem('order')"><div class="fs-1 mb-2">📦</div><h6 class="fw-bold text-warning mb-1">訂單辨識建檔</h6></div>
       <div class="home-card c-inv" onclick="enterSystem('invoice')"><div class="fs-1 mb-2">📝</div><h6 class="fw-bold text-primary mb-1">開立發票作業</h6></div>
-      <div class="home-card c-quo" onclick="enterSystem('quotation')"><div class="fs-1 mb-2">📑</div><h6 class="fw-bold mb-1" style="color: #6f42c1;">開立估價單</h6></div>
-      <div class="home-card c-stk" onclick="enterSystem('inventory')" style="grid-column: span 1;"><div class="fs-1 mb-2">🏭</div><h6 class="fw-bold text-info mb-1">產品庫存管理</h6></div>
+      <div class="home-card c-quo" onclick="enterSystem('quotation')" style="border-bottom-color: #6f42c1; grid-column: span 2;"><div class="fs-1 mb-2">📑</div><h5 class="fw-bold mb-1" style="color: #6f42c1;">開立估價單</h5></div>
+      <div class="home-card c-stk" onclick="enterSystem('inventory')" style="grid-column: span 1;"><div class="fs-1 mb-2">🏭</div><h5 class="fw-bold text-info mb-1">產品庫存管理</h5></div>
       
       <!-- 【新增】送貨追蹤模組大廳按鈕 -->
       <div class="home-card c-dlv" onclick="enterSystem('delivery')" style="border-bottom-color: #fd7e14; grid-column: span 2;"><div class="fs-1 mb-2">🚚</div><h5 class="fw-bold mb-1" style="color: #fd7e14;">送貨追蹤與簽收</h5></div>
@@ -244,7 +244,7 @@
         </div>
       </div>
       
-      <!-- 🚚 【全新】送貨追蹤與簽收模組 -->
+      <!-- 🚚 【新增】送貨追蹤與簽收模組 -->
       <div id="sys-delivery" class="sys-module" style="display:none;">
         <div class="step-card active border-top border-4" style="border-color: #fd7e14;">
           <div class="p-2 bg-light border rounded mb-3">
