@@ -23,6 +23,7 @@ let globalInventory = [];
 let globalSalesDetails = []; 
 let globalInvLogs = []; 
 let globalQuotes = []; 
+let globalDeliveries = []; // 【全新】送貨追蹤總表全域陣列
 let emailSettingsData = { list: [], selected: [] };
 
 let myLastSyncTime = 0;
@@ -81,7 +82,7 @@ function triggerSync() {
     const task = bgSyncQueue[0];
     
     clearTimeout(syncTimeoutTimer);
-    // 【優化】延長 timeout 到 40 秒，避免與 GAS 的 30 秒執行上限發生衝突導致假性超時
+    // 延長 timeout 到 40 秒，避免與 GAS 執行上限衝突導致假性超時
     syncTimeoutTimer = setTimeout(() => {
         console.warn("同步超時，準備於背景重試", task.action);
         task.retry += 1;
@@ -206,6 +207,10 @@ function translateTaskDesc(t) {
         case 'unmergeQuotations': return `✂️ 解除合併估價單`;
         case 'updateQuotationStatus': return `🔄 更改估價單狀態 | 新狀態: ${p.status}`;
         case 'splitAndVoidQuotationItems': return `🗑️ 拆分作廢估價單品項 | 單號: ${p.quoteNo}`;
+        // 【全新】送貨與批號系統翻譯
+        case 'updateDeliveryInfo': return `🚚 更新送貨資訊 | 狀態: ${p.status||''}`;
+        case 'updateDeliveryStatus': return `📦 送貨狀態變更 | 動作: ${p.action === 'sign' ? '簽收結案' : '退回待送'}`;
+        case 'editInvLogBatch': return `🔄 修改出貨批號 | 品名: ${p.name||'未知'} -> 新批號: ${p.newLot||'不分批'}`;
         default: return `⚙️ 系統操作 (${t.action})`;
     }
 }
@@ -254,6 +259,7 @@ function silentRefreshData() {
     callApi('getInitData', {}).then(res => {
         globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
         globalQuotes = res.quotes || []; 
+        globalDeliveries = res.deliveries || []; // 【同步更新】
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -281,6 +287,10 @@ function silentRefreshData() {
         }
         if(document.getElementById('sys-quotation') && document.getElementById('sys-quotation').style.display === 'block') {
             if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+        }
+        // 【新增連動】
+        if(document.getElementById('sys-delivery') && document.getElementById('sys-delivery').style.display === 'block') {
+            if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
         }
     }).catch(err => console.log('背景默默同步失敗:', err));
 }
@@ -341,7 +351,8 @@ window.showPrintPreview = function(areaId) {
     document.getElementById('mainApp').style.display = 'none';
     document.getElementById('homeMenu').style.display = 'none';
     
-    ['printArea', 'printPoArea', 'printQuoteArea'].forEach(id => {
+    // 【擴充】包含 printDeliveryArea
+    ['printArea', 'printPoArea', 'printQuoteArea', 'printDeliveryArea'].forEach(id => {
         const el = document.getElementById(id);
         if(el) {
             el.style.display = 'none';
@@ -384,7 +395,7 @@ window.closePrintPreview = function() {
     document.body.style.backgroundColor = ''; 
     document.body.style.overflow = ''; 
     
-    ['printArea', 'printPoArea', 'printQuoteArea'].forEach(id => {
+    ['printArea', 'printPoArea', 'printQuoteArea', 'printDeliveryArea'].forEach(id => {
         const el = document.getElementById(id);
         if(el) {
             el.style.display = 'none';
@@ -392,8 +403,7 @@ window.closePrintPreview = function() {
             el.style.width = '';
             el.style.overflowX = '';
             el.style.padding = '';
-            // 【優化】清空 DOM 內容，釋放記憶體，避免預覽次數過多導致前端卡頓
-            el.innerHTML = '';
+            el.innerHTML = ''; // 清空 DOM 內容，徹底釋放記憶體
         }
     });
     
@@ -486,6 +496,7 @@ window.initSystemData = function() {
         clearInterval(intv); setProgress(100, '✅ 準備完成！');
         globalClients = res.clients || []; globalSuppliers = res.suppliers || []; globalCatalog = res.catalog || []; globalHistory = res.history || []; globalOrders = res.orders || []; globalInventory = res.inventory || []; globalSalesDetails = res.salesDetails || []; globalInvLogs = res.invLogs || [];
         globalQuotes = res.quotes || []; 
+        globalDeliveries = res.deliveries || []; // 【同步更新】
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -517,6 +528,7 @@ window.refreshData = function() {
     callApi('getInitData', {}).then(res => {
         globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
         globalQuotes = res.quotes || []; 
+        globalDeliveries = res.deliveries || []; // 【同步更新】
         if (res.emailSettings) emailSettingsData = res.emailSettings;
         myLastSyncTime = res.serverSyncTime || Date.now();
         
@@ -547,6 +559,10 @@ window.refreshData = function() {
         if(document.getElementById('sys-quotation') && document.getElementById('sys-quotation').style.display === 'block') {
             if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
         }
+        // 【新增連動】
+        if(document.getElementById('sys-delivery') && document.getElementById('sys-delivery').style.display === 'block') {
+            if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
+        }
     }).catch(err => { hideLoading(); alert("同步失敗：" + err.message); });
 };
 
@@ -554,7 +570,8 @@ window.enterSystem = function(modId) {
     document.getElementById('homeMenu').style.display = 'none'; document.getElementById('mainApp').style.display = 'block';
     document.querySelectorAll('.sys-module').forEach(el => el.style.display = 'none'); document.getElementById(`sys-${modId}`).style.display = 'block';
     
-    const titles = {'order':'📦 訂單辨識建檔', 'invoice':'📝 開立發票', 'inventory': '🏭 產品庫存管理', 'history':'📊 紀錄與報表', 'admin':'⚙️ 管理員後台', 'quotation': '📑 開立估價單'}; 
+    // 【擴充】新增 title
+    const titles = {'order':'📦 訂單辨識建檔', 'invoice':'📝 開立發票', 'inventory': '🏭 產品庫存管理', 'history':'📊 紀錄與報表', 'admin':'⚙️ 管理員後台', 'quotation': '📑 開立估價單', 'delivery': '🚚 送貨與電子簽收'}; 
     
     if(document.getElementById('sysTitle')) document.getElementById('sysTitle').innerText = titles[modId]; 
     document.getElementById('mainApp').scrollTo(0,0);
@@ -577,6 +594,10 @@ window.enterSystem = function(modId) {
     }
     if(modId === 'quotation') {
         if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+    }
+    // 【新增連動】
+    if(modId === 'delivery') {
+        if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
     }
 };
 
