@@ -5,6 +5,27 @@
  */
 
 // ============================================================================
+// 【核心防護罩】批號與效期安全解析器
+// ============================================================================
+window.parseBatchesSafely = function(rawStr, defaultQty) {
+    if (!rawStr || String(rawStr).trim() === '') return [];
+    let parsed;
+    try { 
+        parsed = JSON.parse(rawStr); 
+    } catch(e) { 
+        parsed = rawStr; 
+    }
+    
+    // 如果確實是標準陣列，直接回傳
+    if (Array.isArray(parsed)) {
+        return parsed;
+    } else {
+        // 如果是純數字 (如 12345) 或純文字，強制包裝成標準的單一物件陣列
+        return [{ lot: String(parsed), exp: '', qty: defaultQty || 0 }];
+    }
+};
+
+// ============================================================================
 // 庫存管理與異動模組
 // ============================================================================
 window.populateLogDropdowns = function() { 
@@ -59,8 +80,8 @@ window.renderInventory = debounce(function() {
         
         if (v.qty <= v.alertQty) alertHTML = `<div class="small text-danger fw-bold mt-1">⚠️ 低於安全庫存 (${v.alertQty})</div>`;
         
-        let batches = [];
-        try { batches = JSON.parse(v.batchesStr || '[]'); } catch(e){}
+        // 【套用安全防護罩】
+        let batches = window.parseBatchesSafely(v.batchesStr, v.qty);
         let batchDisplay = '';
         if (batches.length === 1) {
             batchDisplay = `效期: ${batches[0].exp||'--'} | 批號: ${batches[0].lot||'--'}`;
@@ -205,8 +226,8 @@ window.openEditBatchModal = function(idx) {
     select.innerHTML = '<option value="">不分批 (退回總庫存)</option>';
     
     if (inv && inv.batchesStr) {
-        let batches = [];
-        try { batches = JSON.parse(inv.batchesStr); } catch(e){}
+        // 【套用安全防護罩】
+        let batches = window.parseBatchesSafely(inv.batchesStr, inv.qty);
         batches.forEach(b => {
             select.innerHTML += `<option value="${escapeQuotes(b.lot)}" data-exp="${escapeQuotes(b.exp)}">${b.lot} (目前庫存: ${b.qty}, 效期: ${b.exp})</option>`;
         });
@@ -339,8 +360,8 @@ window.saveInventoryAdjust = function() {
             v.alertQty = alertQty; v.cost = cost; v.supplier = sup; 
             if(internalCode) v.internalCode = internalCode; 
             
-            let batches = [];
-            try { batches = JSON.parse(v.batchesStr || '[]'); } catch(e){}
+            // 【套用安全防護罩】
+            let batches = window.parseBatchesSafely(v.batchesStr, v.qty);
             if (lot || exp) {
                 let bIdx = batches.findIndex(b => b.lot === lot && b.exp === exp);
                 if (bIdx >= 0) batches[bIdx].qty += changeQty;
@@ -408,8 +429,8 @@ window.openShipModal = function(rowIdx) {
     const batchSelect = document.getElementById('shipBatchSelect');
     batchSelect.innerHTML = '';
     if (inv && inv.batchesStr) {
-        let batches = [];
-        try { batches = JSON.parse(inv.batchesStr); } catch(e){}
+        // 【套用安全防護罩】
+        let batches = window.parseBatchesSafely(inv.batchesStr, inv.qty);
         if (batches.length > 0) {
             batchSelect.innerHTML = '<option value="">不指定批號 (自動扣減總庫存)</option>' +
                 batches.map(b => `<option value="${escapeQuotes(b.lot)}" data-exp="${escapeQuotes(b.exp)}" data-qty="${b.qty}">${b.lot} (庫存: ${b.qty})</option>`).join('');
@@ -454,8 +475,8 @@ window.confirmShipment = function() {
     if (inv) {
         inv.qty -= qty;
         if (batchTarget) {
-            let batches = [];
-            try { batches = JSON.parse(inv.batchesStr || '[]'); } catch(e){}
+            // 【套用安全防護罩】
+            let batches = window.parseBatchesSafely(inv.batchesStr, inv.qty + qty);
             let bIdx = batches.findIndex(b => b.lot === batchTarget);
             if (bIdx >= 0) {
                 batches[bIdx].qty -= qty;
@@ -475,7 +496,8 @@ window.confirmShipment = function() {
     
     if(typeof window.populateLogDropdowns === 'function') window.populateLogDropdowns(); 
     window.renderInvLogs(); window.renderInventory(); window.renderShipments(); 
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('shipModal')).hide(); 
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('shipModal')).show(); 
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('shipModal')).hide(); // 修復關閉
     
     pushToSyncQueue('updateShipment', {
         updates: [{rowIdx: rowIdx, paperNo: s.paperNo, client: s.client, name: s.name, shipQty: qty, totalQty: s.qty, batchTarget: batchTarget}], 
