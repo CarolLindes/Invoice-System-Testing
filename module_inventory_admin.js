@@ -63,10 +63,7 @@ window.renderInventory = debounce(function() {
                 <div>
                     <div class="fw-bold fs-6 text-dark"><span class="stock-dot ${dot}"></span>${v.name} <span class="badge bg-secondary ms-1">${v.internalCode||''}</span></div>
                     <div class="small text-primary mt-1 fw-bold">對應資材碼: ${v.assetCodeCombined||'無'}</div>
-                    <div class="small text-muted mt-1">
-                        效期: <span class="text-dark">${v.expiry || '--'}</span> | 
-                        批號: <span class="text-dark">${v.lot || '--'}</span>
-                    </div>
+                    <div class="small text-muted mt-1">效期: <span class="text-dark">${v.expiry||'--'}</span> | 批號: <span class="text-dark">${v.lot||'--'}</span></div>
                     ${alertHTML}
                 </div>
                 <div class="text-end">
@@ -116,16 +113,16 @@ window.renderInvLogs = debounce(function() {
         if (l.arrivalDate) extInfo.push(`進貨日: ${l.arrivalDate}`);
         let extHtml = extInfo.length > 0 ? `<div class="small text-primary fw-bold mt-1">${extInfo.join(' | ')}</div>` : '';
         
-        // 【新增】修改批號的專屬按鈕
+        // 【新增】修改批號專屬按鈕
         let actionBtns = '';
         if (l.type === "分批出貨") {
-            // 解析原本出貨的批號
             let oldLotMatch = (l.memo||'').match(/出貨批號:\s*(.+)/);
             let oldLot = oldLotMatch ? oldLotMatch[1].trim() : '通用批號';
             actionBtns += `<button class="btn btn-sm btn-outline-warning text-dark fw-bold me-1" onclick="openEditLotModal(${l.rowIdx}, '${escapeQuotes(l.name)}', ${Math.abs(l.qtyChange)}, '${escapeQuotes(oldLot)}')">🔄 修改批號</button>`;
         }
-        
+
         actionBtns += `<button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openEditInvLogModal(${l.rowIdx})">✏️ 編輯</button>`;
+        
         if (l.type === "向廠商訂貨" && l.snapshot) {
             actionBtns = `<button class="btn btn-sm btn-outline-info fw-bold me-1 text-dark" onclick="reprintPurchaseOrderFast(${l.rowIdx})">🖨️ 列印訂貨單</button>` + actionBtns;
         }
@@ -155,7 +152,6 @@ window.openEditLotModal = function(rowIdx, name, qty, oldLot) {
     document.getElementById('ml_qty').value = qty;
     document.getElementById('ml_oldLot').value = oldLot;
     
-    // 解析該產品目前擁有的所有批號
     let inv = globalInventory.find(x => x.name === name);
     let selectEl = document.getElementById('ml_newLotSelect');
     selectEl.innerHTML = '';
@@ -163,20 +159,13 @@ window.openEditLotModal = function(rowIdx, name, qty, oldLot) {
     if (inv && inv.lot) {
         let lots = inv.lot.toString().split(',').map(s=>s.trim()).filter(x=>x);
         let exps = (inv.expiry||'').toString().split(',').map(s=>s.trim());
-        let qtys = (inv.qty ? String(inv.qty) : '').toString().split(',').map(s=>parseFloat(s)||0); // 注意這裡的數量是總量，但我們只做簡單列出
-        
-        // 為了讓舊的庫存系統也能運作，如果長度不一，做容錯處理
         if (lots.length > 0) {
             lots.forEach((lotStr, i) => {
                 let expStr = exps[i] ? `(效期: ${exps[i]})` : '';
                 selectEl.innerHTML += `<option value="${escapeQuotes(lotStr)}">${lotStr} ${expStr}</option>`;
             });
-        } else {
-            selectEl.innerHTML = `<option value="通用批號">通用批號 (預設)</option>`;
-        }
-    } else {
-        selectEl.innerHTML = `<option value="通用批號">通用批號 (預設)</option>`;
-    }
+        } else { selectEl.innerHTML = `<option value="通用批號">通用批號 (預設)</option>`; }
+    } else { selectEl.innerHTML = `<option value="通用批號">通用批號 (預設)</option>`; }
     
     bootstrap.Modal.getOrCreateInstance(document.getElementById('editLotModal')).show();
 };
@@ -195,16 +184,14 @@ window.confirmModifyLot = function() {
     
     showLoading("更新批號與校正庫存中...");
     
-    // 樂觀更新前端畫面
+    // 樂觀更新
     let log = globalInvLogs.find(x => x.rowIdx == rowIdx);
     if (log) {
         log.memo = String(log.memo).replace(`出貨批號: ${oldLot}`, `出貨批號: ${newLot}`);
         if (!log.memo.includes('出貨批號:')) log.memo += ` (出貨批號: ${newLot})`;
     }
     
-    pushToSyncQueue('modifyLogBatch', {
-        rowIdx: rowIdx, name: name, qty: qty, oldLot: oldLot, newLot: newLot
-    }, null);
+    pushToSyncQueue('modifyLogBatch', { rowIdx: rowIdx, name: name, qty: qty, oldLot: oldLot, newLot: newLot }, null);
     
     bootstrap.Modal.getInstance(document.getElementById('editLotModal')).hide();
     hideLoading();
@@ -236,9 +223,7 @@ window.saveEditInvLog = function() {
     const memo = document.getElementById('e_logMemo').value.trim();
     
     const l = globalInvLogs.find(x => x.rowIdx === idx);
-    if(l) {
-        l.invoiceNo = invoiceNo; l.arrivalDate = arrivalDate; l.orderNo = orderNo; l.memo = memo;
-    }
+    if(l) { l.invoiceNo = invoiceNo; l.arrivalDate = arrivalDate; l.orderNo = orderNo; l.memo = memo; }
     
     pushToSyncQueue('editInvLogRecord', { rowIdx: idx, invoiceNo, arrivalDate, orderNo, memo }, null);
     window.renderInvLogs();
@@ -305,8 +290,7 @@ window.saveInventoryAdjust = function() {
     const alertQty = parseFloat(document.getElementById('adjAlert').value) || 0; 
     const cost = parseFloat(document.getElementById('adjCost').value) || 0; 
     const sup = document.getElementById('adjSup').value.trim(); 
-    // 【升級】若未填批號，預設給「通用批號」以維持系統穩定
-    const lot = document.getElementById('adjLot').value.trim() || '通用批號'; 
+    const lot = document.getElementById('adjLot').value.trim() || '通用批號'; // 未填批號預設值
     const exp = document.getElementById('adjExp').value; 
     const type = document.getElementById('adjType').value; 
     const memo = document.getElementById('adjMemo').value.trim();
@@ -315,10 +299,9 @@ window.saveInventoryAdjust = function() {
     
     if(!name || isNaN(changeQty) || changeQty === 0) return alert("請選定品名並輸入非零異動數量");
     
-    // 【升級】改呼叫後端新寫的 adjustInventoryWithBatch
+    // 【升級】改呼叫新的 API
     const payload = { name: name, internalCode: internalCode, changeQty: changeQty, alertQty: alertQty, cost: cost, supplier: sup, lot: lot, expiry: exp, type: type, memo: memo, invoiceNo: invoiceNo, arrivalDate: arrivalDate, staff: myName };
     
-    // 樂觀更新總庫存數字 (細節留給伺服器處理)
     if(idx) { 
         const v = globalInventory.find(x => x.rowIdx === parseInt(idx)); 
         if(v) { v.qty += changeQty; v.alertQty = alertQty; v.cost = cost; v.supplier = sup; if(internalCode) v.internalCode=internalCode; } 
@@ -375,7 +358,6 @@ window.openShipModal = function(rowIdx) {
     selectEl.innerHTML = '';
     
     if (inv && inv.lot) {
-        // 解析後端的陣列字串 "LOT1, LOT2"
         let lots = inv.lot.toString().split(',').map(str=>str.trim()).filter(x=>x);
         let exps = (inv.expiry||'').toString().split(',').map(str=>str.trim());
         let qtys = (inv.qty ? String(inv.qty) : '').toString().split(',').map(str=>parseFloat(str)||0);
@@ -383,16 +365,11 @@ window.openShipModal = function(rowIdx) {
         if (lots.length > 0) {
             lots.forEach((lotStr, i) => {
                 let expStr = exps[i] ? `(效期: ${exps[i]})` : '';
-                // 為了相容舊資料架構，若單一批號未記錄獨立數量，我們就不顯示數量，避免混淆
                 let qtyStr = qtys[i] !== undefined ? `| 庫存: ${qtys[i]}` : '';
                 selectEl.innerHTML += `<option value="${escapeQuotes(lotStr)}">${lotStr} ${expStr} ${qtyStr}</option>`;
             });
-        } else {
-            selectEl.innerHTML = `<option value="通用批號">通用批號 (未指定)</option>`;
-        }
-    } else {
-        selectEl.innerHTML = `<option value="通用批號">無可用批號 (預設為通用批號)</option>`;
-    }
+        } else { selectEl.innerHTML = `<option value="通用批號">通用批號 (未指定)</option>`; }
+    } else { selectEl.innerHTML = `<option value="通用批號">無可用批號 (預設為通用批號)</option>`; }
 
     bootstrap.Modal.getOrCreateInstance(document.getElementById('shipModal')).show();
 };
@@ -430,16 +407,15 @@ window.confirmShipment = function() {
         memo: ''
     };
     
-    // 呼叫全新的批號出貨與送貨記錄 API
     pushToSyncQueue('updateShipmentWithBatch', {updates: [{rowIdx: rowIdx, paperNo: s.paperNo, name: s.name, shipQty: qty, totalQty: s.qty, selectedLot: selectedLot}], staff: myName}, null); 
     pushToSyncQueue('saveDelivery', dlvPayload, null);
     
     bootstrap.Modal.getInstance(document.getElementById('shipModal')).hide(); 
-    showToast(`🚚 出貨成功 (已扣除批號 ${selectedLot})，並已轉入送貨追蹤系統！`);
+    showToast(`🚚 出貨成功 (批號 ${selectedLot})，並已轉入送貨追蹤系統！`);
 };
 
 // ============================================================================
-// 動態替換客戶輸入框為「下拉選單」，並支援收件單位與地址的即時連動
+// 向廠商訂貨 (PO)
 // ============================================================================
 window.triggerPoClientChange = function(clientName) {
     const cObj = globalClients.find(x => x.name === clientName);
@@ -451,12 +427,8 @@ window.triggerPoClientChange = function(clientName) {
         const depts = cObj.receiveDept.split(/[,，\n]+/).map(str => str.trim()).filter(x => x);
         if (depts.length > 0) {
             deptSelect.innerHTML = depts.map(d => `<option value="${d}">${d}</option>`).join('');
-        } else {
-            deptSelect.innerHTML = `<option value="">無資料</option>`;
-        }
-    } else {
-        deptSelect.innerHTML = `<option value="">無資料</option>`;
-    }
+        } else { deptSelect.innerHTML = `<option value="">無資料</option>`; }
+    } else { deptSelect.innerHTML = `<option value="">無資料</option>`; }
 };
 
 window.openPurchaseOrderModal = function(salesRowIdx) {
@@ -573,9 +545,7 @@ window.reprintPurchaseOrderFast = function(idx) {
     try {
         const snapData = JSON.parse(l.snapshot);
         window.printPurchaseOrder(snapData);
-    } catch(e) {
-        alert("快照資料解析失敗");
-    }
+    } catch(e) { alert("快照資料解析失敗"); }
 };
 
 window.printPurchaseOrder = function(data) {
@@ -640,9 +610,7 @@ window.printPurchaseOrder = function(data) {
         printPoArea.innerHTML = html;
         if (typeof window.applyPrintStyle === 'function') window.applyPrintStyle('A5', 'landscape');
         if (typeof window.showPrintPreview === 'function') window.showPrintPreview('printPoArea');
-    } else {
-        alert('系統錯誤：找不到訂貨單列印區塊');
-    }
+    } else { alert('系統錯誤：找不到訂貨單列印區塊'); }
 };
 
 // ============================================================================
