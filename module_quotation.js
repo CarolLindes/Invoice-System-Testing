@@ -526,3 +526,4 @@ window.printQuotation = function(gid) {
         alert('系統錯誤：找不到估價單列印區塊');
     }
 };
+
