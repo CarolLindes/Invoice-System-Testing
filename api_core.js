@@ -81,11 +81,12 @@ function triggerSync() {
     const task = bgSyncQueue[0];
     
     clearTimeout(syncTimeoutTimer);
+    // 【優化】延長 timeout 到 40 秒，避免與 GAS 的 30 秒執行上限發生衝突導致假性超時
     syncTimeoutTimer = setTimeout(() => {
-        console.warn("同步超時，強制重置狀態");
+        console.warn("同步超時，準備於背景重試", task.action);
         task.retry += 1;
         handleSyncRetry(task);
-    }, 30000);
+    }, 40000);
 
     callApi(task.action, task.payload).then(res => {
         clearTimeout(syncTimeoutTimer);
@@ -391,6 +392,8 @@ window.closePrintPreview = function() {
             el.style.width = '';
             el.style.overflowX = '';
             el.style.padding = '';
+            // 【優化】清空 DOM 內容，釋放記憶體，避免預覽次數過多導致前端卡頓
+            el.innerHTML = '';
         }
     });
     
