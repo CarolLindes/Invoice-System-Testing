@@ -7,6 +7,9 @@
 let currentDeliveryIds = [];
 let signaturePadInstance = null;
 
+// ============================================================================
+// 送貨清單渲染與狀態管理
+// ============================================================================
 window.renderDeliveryList = debounce(function() {
     const term = (document.getElementById('dlvSearchInput').value || '').toLowerCase();
     const fMethod = document.getElementById('dlvFilterMethod').value;
@@ -118,7 +121,8 @@ window.openEditDeliveryModal = function(idx) {
     const d = globalDeliveries.find(x => x.rowIdx === idx);
     if (!d) return;
     currentDeliveryIds = [idx];
-    document.getElementById('dlv_date').value = cleanDateStr(d.deliveryDate);
+    // 使用全域或預設方法確保日期格式正確載入
+    document.getElementById('dlv_date').value = (typeof cleanDateStr === 'function') ? cleanDateStr(d.deliveryDate) : getTodayStr();
     document.getElementById('dlv_method').value = d.method || '新竹貨運';
     document.getElementById('dlv_memo').value = d.memo || '';
     bootstrap.Modal.getOrCreateInstance(document.getElementById('shipDeliveryModal')).show();
@@ -161,6 +165,9 @@ window.revertDelivery = function(idx) {
     }
 };
 
+// ============================================================================
+// 一比一 A5 橫式送貨單列印系統
+// ============================================================================
 window.generateDeliveryPrintHtml = function(d) {
     // 智慧解析明細字串 (提取品名、數量、批號)
     let itemName = d.itemsStr;
@@ -178,7 +185,10 @@ window.generateDeliveryPrintHtml = function(d) {
     let price = p ? (parseFloat(p.price) || 0) : 0;
     let subtotal = price * qty;
 
-    const dateStr = cleanDateStr(d.deliveryDate).split('-'); // [YYYY, MM, DD]
+    // 日期處理：安全防護確保畫面不會壞掉
+    let rawDate = d.deliveryDate;
+    let cleanD = (typeof cleanDateStr === 'function') ? cleanDateStr(rawDate) : rawDate;
+    const dateStr = (cleanD || getTodayStr()).split('-'); // [YYYY, MM, DD]
 
     let tbody = `
         <tr>
