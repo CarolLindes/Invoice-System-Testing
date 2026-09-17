@@ -602,3 +602,4 @@ window.enterSystem = function(modId) {
 };
 
 window.backToHome = function() { document.getElementById('mainApp').style.display = 'none'; document.getElementById('homeMenu').style.display = 'block'; };
+
