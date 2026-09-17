@@ -23,7 +23,7 @@ let globalInventory = [];
 let globalSalesDetails = []; 
 let globalInvLogs = []; 
 let globalQuotes = []; 
-let globalDeliveries = []; // 【修復】加入全域送貨追蹤資料庫
+let globalDeliveries = []; // 【修復】全域送貨追蹤資料
 let emailSettingsData = { list: [], selected: [] };
 
 let myLastSyncTime = 0;
@@ -207,7 +207,7 @@ function translateTaskDesc(t) {
         case 'updateQuotationStatus': return `🔄 更改估價單狀態 | 新狀態: ${p.status}`;
         case 'splitAndVoidQuotationItems': return `🗑️ 拆分作廢估價單品項 | 單號: ${p.quoteNo}`;
         
-        // 【新增】送貨與批號系統的錯誤翻譯
+        // 【修復】加入批號與送貨追蹤的 API 翻譯
         case 'updateShipmentWithBatch': return `🚚 出貨作業 (含批號) | 扣庫存 (${p.updates?.[0]?.name||'多筆品項'})`;
         case 'adjustInventoryWithBatch': return `🏭 庫存異動 (含批號) | 品項: ${p.name||'未知'} | 動作: ${p.type||''} (${(p.changeQty||0)>0?'+':''}${p.changeQty||0})`;
         case 'saveDelivery': return `🚚 新增送貨追蹤 | 客戶: ${p.client||'未知'}`;
@@ -354,7 +354,7 @@ window.showPrintPreview = function(areaId) {
     document.getElementById('mainApp').style.display = 'none';
     document.getElementById('homeMenu').style.display = 'none';
     
-    // 【修改】將送貨單列印區塊 printDeliveryArea 加進來保護
+    // 【修復】將送貨單列印區塊 printDeliveryArea 加進來保護
     ['printArea', 'printPoArea', 'printQuoteArea', 'printDeliveryArea'].forEach(id => {
         const el = document.getElementById(id);
         if(el) {
@@ -398,7 +398,7 @@ window.closePrintPreview = function() {
     document.body.style.backgroundColor = ''; 
     document.body.style.overflow = ''; 
     
-    // 【修改】將送貨單列印區塊 printDeliveryArea 加進來保護
+    // 【修復】將送貨單列印區塊 printDeliveryArea 加進來保護
     ['printArea', 'printPoArea', 'printQuoteArea', 'printDeliveryArea'].forEach(id => {
         const el = document.getElementById(id);
         if(el) {
@@ -572,7 +572,7 @@ window.enterSystem = function(modId) {
     document.getElementById('homeMenu').style.display = 'none'; document.getElementById('mainApp').style.display = 'block';
     document.querySelectorAll('.sys-module').forEach(el => el.style.display = 'none'); document.getElementById(`sys-${modId}`).style.display = 'block';
     
-    // 【修改】加入送貨追蹤的標題
+    // 【修復】加入送貨追蹤的標題
     const titles = {'order':'📦 訂單辨識建檔', 'invoice':'📝 開立發票', 'inventory': '🏭 產品庫存管理', 'history':'📊 紀錄與報表', 'admin':'⚙️ 管理員後台', 'quotation': '📑 開立估價單', 'delivery': '🚚 送貨追蹤與簽收'}; 
     
     if(document.getElementById('sysTitle')) document.getElementById('sysTitle').innerText = titles[modId]; 
@@ -597,7 +597,7 @@ window.enterSystem = function(modId) {
     if(modId === 'quotation') {
         if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
     }
-    // 【新增】進入送貨模組時觸發渲染
+    // 【修復】進入送貨模組時觸發渲染
     if(modId === 'delivery') {
         if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
     }
