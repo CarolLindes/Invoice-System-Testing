@@ -106,7 +106,7 @@ window.openQuotationModal = function(idx) {
         const q = globalQuotes.find(x => x.rowIdx === idx);
         document.getElementById('e_quoRow').value = idx;
         
-        // 【套用日期淨化器】確保編輯時，原本的日期能正確塞入 <input type="date"> 中
+        // 【套用日期淨化器】確保編輯時，原本的日期能正確塞入 <input type="date"> 中，不會消失或變成今天
         document.getElementById('e_quoDate').value = cleanDateStr(q.quoteDate);
         
         document.getElementById('e_quoNo').value = q.quoteNo;
