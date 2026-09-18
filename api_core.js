@@ -1,11 +1,16 @@
 /**
  * ============================================================================
- * 模組 1：API 核心、全域狀態與基礎 UI 工具 (api_core.js)
+ * 模組 1：API 核心、全域狀態與雙軌並行架構 (api_core.js) - 【上半部】
  * ============================================================================
  */
 
-// 🔴 系統 API 端點 (依據原始設定)
-const API_URL = "https://script.google.com/macros/s/AKfycbwR4pxjLSldLQW3sG7y8FiTPyV4mZg4rq0L33k0Htz26RxK8mrjFpucpW7pnBmpZaXD/exec";
+// 🔴 舊版系統 API 端點 (GAS)
+const API_URL = "https://script.google.com/macros/s/AKfycbxWzxfHYdw9qvcPtGpU2qjxk-10hToTb1Jx-LrMhBN1jkR3IXUnu8m6UgfKcGMsi0tl/exec";
+
+// 🟢 新版系統 API 端點 (Supabase)
+const SUPABASE_URL = "https://dojhiznffztiyofkfdiu.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvamhpem5mZnp0aXlvZmtmZGl1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzk3MzYsImV4cCI6MjEwNTMxNTczNn0.reT6i25kO1d1V8p2fDMHOOPVxaUJfp9SxOFeg-_xFqI";
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ============================================================================
 // 全域變數與狀態管理
@@ -37,7 +42,7 @@ let currentSearchSource = [];
 let currentSearchCallback = null;
 
 // ============================================================================
-// API 通訊模組
+// API 通訊模組 (發送至 Google Sheets)
 // ============================================================================
 async function callApi(action, payload = {}) {
     if (API_URL.includes("請填入你的")) throw new Error("⚠️ 尚未設定 API_URL，請更新 api_core.js 中的網址！");
@@ -58,7 +63,112 @@ async function callApi(action, payload = {}) {
 }
 
 // ============================================================================
-// 背景同步佇列系統
+// 【全新】Supabase 雙軌寫入路由中心
+// ============================================================================
+async function dualWriteToSupabase(action, payload) {
+    try {
+        console.log(`[雙軌寫入] 準備同步 ${action} 至 Supabase...`);
+        
+        // 依據不同行為，將資料極速寫入對應的 Supabase 表格
+        if (action === 'saveOrderData') {
+            const items = payload.items || [];
+            await supabase.from('orders').upsert({
+                row_idx: payload.rowIdx || Date.now(),
+                time: Date.now(), client: payload.clientName, order_no: payload.orderNo,
+                dept: payload.department, status: payload.status, json_str: JSON.stringify(items),
+                deadline: payload.deadline, source: payload.source, mail_url: payload.mailUrl
+            });
+        } 
+        else if (action === 'submitInvoice') {
+            await supabase.from('invoices').insert({
+                row_idx: Date.now(), time: payload.invDate, staff: payload.staff,
+                client: payload.clientName, tax_id: payload.taxId, net: payload.netTotal,
+                tax: payload.tax, total: payload.totalWithTax, details: payload.detailsStr,
+                paper_no: payload.paperNo, order_no: payload.orderNo, status: '正常', history_log: '[]'
+            });
+            if (payload.items && payload.items.length > 0) {
+                const sdArr = payload.items.map((i, idx) => ({
+                    row_idx: Date.now() + Math.floor(Math.random() * 1000) + idx,
+                    time: payload.invDate, paper_no: payload.paperNo, client: payload.clientName,
+                    order_no: payload.orderNo, name: i.name, qty: i.qty, unit: i.unit,
+                    price: i.price, subtotal: i.subtotal, ship_status: '待出貨', shipped_qty: 0,
+                    lot: '', expiry: ''
+                }));
+                await supabase.from('sales_details').insert(sdArr);
+            }
+        } 
+        else if (action === 'adjustInventory') {
+            const { data: inv } = await supabase.from('inventory').select('*').eq('name', payload.name).single();
+            let currentNewQty = payload.changeQty;
+            if (inv) {
+                currentNewQty = Number(inv.qty) + payload.changeQty;
+                let batches = JSON.parse(inv.batches_str || '[]');
+                if (payload.lot || payload.expiry) {
+                    let bIdx = batches.findIndex(b => b.lot === payload.lot && b.exp === payload.expiry);
+                    if (bIdx >= 0) batches[bIdx].qty += payload.changeQty;
+                    else batches.push({ lot: payload.lot, exp: payload.expiry, qty: payload.changeQty });
+                }
+                await supabase.from('inventory').update({ 
+                    qty: currentNewQty, cost: payload.cost, alert_qty: payload.alertQty,
+                    supplier: payload.supplier, internal_code: payload.internalCode, 
+                    batches_str: JSON.stringify(batches) 
+                }).eq('name', payload.name);
+            } else {
+                let newBatches = [];
+                if (payload.lot || payload.expiry) newBatches.push({ lot: payload.lot, exp: payload.expiry, qty: payload.changeQty });
+                await supabase.from('inventory').insert({
+                    name: payload.name, qty: payload.changeQty, alert_qty: payload.alertQty,
+                    cost: payload.cost, supplier: payload.supplier, internal_code: payload.internalCode,
+                    batches_str: JSON.stringify(newBatches)
+                });
+            }
+            await supabase.from('inventory_logs').insert({
+                row_idx: Date.now(), time: Date.now(), staff: payload.staff, name: payload.name,
+                type: payload.type, qty_change: payload.changeQty, new_qty: currentNewQty,
+                lot: payload.lot, expiry: payload.expiry, invoice_no: payload.invoiceNo,
+                arrival_date: payload.arrivalDate, memo: payload.memo, internal_code: payload.internalCode
+            });
+        } 
+        else if (action === 'updateShipment') {
+            for (let u of payload.updates) {
+                const { data: sd } = await supabase.from('sales_details').select('*').eq('row_idx', u.rowIdx).single();
+                if (sd) {
+                    let newShipped = (sd.shipped_qty || 0) + u.shipQty;
+                    let newStatus = newShipped >= sd.qty ? '已結案' : '部分出貨';
+                    await supabase.from('sales_details').update({ shipped_qty: newShipped, ship_status: newStatus }).eq('row_idx', u.rowIdx);
+                }
+                const { data: inv } = await supabase.from('inventory').select('*').eq('name', u.name).single();
+                if (inv) {
+                    let newQty = Number(inv.qty) - u.shipQty;
+                    let batches = JSON.parse(inv.batches_str || '[]');
+                    if (u.batchTarget) {
+                        let bIdx = batches.findIndex(b => b.lot === u.batchTarget);
+                        if (bIdx >= 0) batches[bIdx].qty -= u.shipQty;
+                    }
+                    batches = batches.filter(b => b.qty > 0);
+                    await supabase.from('inventory').update({ qty: newQty, batches_str: JSON.stringify(batches) }).eq('name', u.name);
+                    
+                    await supabase.from('inventory_logs').insert({
+                        row_idx: Date.now() + Math.floor(Math.random() * 1000), time: Date.now(),
+                        staff: payload.staff, name: u.name, type: '分批出貨', qty_change: -u.shipQty,
+                        new_qty: newQty, lot: u.batchTarget || '', order_no: u.paperNo, memo: `單號: ${u.paperNo}`
+                    });
+                }
+            }
+        } 
+        else if (action === 'addClientData') {
+            await supabase.from('clients').insert({
+                name: payload.clientName, tax_id: payload.taxId, address: payload.address, receive_dept: payload.receiveDept
+            });
+        }
+        console.log(`[雙軌寫入] ${action} 已極速發送至 Supabase`);
+    } catch (e) {
+        console.error(`[雙軌寫入錯誤] ${action}:`, e);
+    }
+}
+
+// ============================================================================
+// 背景同步佇列系統 (雙向防呆版)
 // ============================================================================
 let bgSyncQueue = []; 
 let isSyncing = false; 
@@ -87,6 +197,9 @@ function triggerSync() {
         task.retry += 1;
         handleSyncRetry(task);
     }, 28000);
+
+    // 🔥 雙軌並行核心：同時呼叫 Supabase 與 GAS
+    dualWriteToSupabase(task.action, task.payload);
 
     callApi(task.action, task.payload).then(res => {
         clearTimeout(syncTimeoutTimer);
@@ -253,43 +366,102 @@ function updateSyncIndicator() {
     } 
 }
 
+// ============================================================================
+// 【全新核心】從 Supabase 極速載入全系統資料 (0.1秒載入)
+// ============================================================================
+async function loadDataFromSupabase() {
+    console.log("⚡ 從 Supabase 極速載入資料...");
+    const [
+        {data: c}, {data: s}, {data: cat}, {data: inv}, {data: ord},
+        {data: invc}, {data: sd}, {data: log}, {data: del}, {data: quo}, {data: em}
+    ] = await Promise.all([
+        supabase.from('clients').select('*'),
+        supabase.from('suppliers').select('*'),
+        supabase.from('catalog').select('*'),
+        supabase.from('inventory').select('*'),
+        supabase.from('orders').select('*').order('row_idx', {ascending: false}),
+        supabase.from('invoices').select('*').order('row_idx', {ascending: false}),
+        supabase.from('sales_details').select('*').order('row_idx', {ascending: false}),
+        supabase.from('inventory_logs').select('*').order('row_idx', {ascending: false}),
+        supabase.from('deliveries').select('*').order('row_idx', {ascending: false}),
+        supabase.from('quotations').select('*').order('row_idx', {ascending: false}),
+        supabase.from('email_settings').select('*')
+    ]);
+
+    // 將 Supabase 的蛇形命名 (snake_case) 自動轉換回系統適用的駝峰命名 (camelCase)
+    globalClients = (c || []).map(x => ({name: x.name, taxId: x.tax_id, address: x.address, receiveDept: x.receive_dept}));
+    globalSuppliers = (s || []).map(x => ({name: x.name, code: x.code, phone: x.phone, fax: x.fax}));
+    globalCatalog = (cat || []).map(x => ({rowIndex: x.row_index, assetCode: x.asset_code, internalCode: x.internal_code, clientName: x.client_name, productName: x.product_name, unit: x.unit, price: Number(x.price)}));
+    globalInventory = (inv || []).map(x => ({rowIdx: 0, name: x.name, qty: Number(x.qty), alertQty: Number(x.alert_qty), cost: Number(x.cost), supplier: x.supplier, internalCode: x.internal_code, assetCodeCombined: x.asset_code_combined, batchesStr: x.batches_str}));
+    globalOrders = (ord || []).map(x => ({rowIdx: x.row_idx, time: Number(x.time), client: x.client, orderNo: x.order_no, dept: x.dept, status: x.status, jsonStr: x.json_str, deadline: x.deadline, source: x.source, mailUrl: x.mail_url}));
+    globalHistory = (invc || []).map(x => ({rowIdx: x.row_idx, time: Number(x.time), staff: x.staff, client: x.client, taxId: x.tax_id, net: Number(x.net), tax: Number(x.tax), total: Number(x.total), details: x.details, paperNo: x.paper_no, orderNo: x.order_no, status: x.status, historyLog: x.history_log}));
+    globalSalesDetails = (sd || []).map(x => ({rowIdx: x.row_idx, time: Number(x.time), paperNo: x.paper_no, client: x.client, orderNo: x.order_no, name: x.name, qty: Number(x.qty), unit: x.unit, price: Number(x.price), subtotal: Number(x.subtotal), shipStatus: x.ship_status, shippedQty: Number(x.shipped_qty), lot: x.lot, expiry: x.expiry}));
+    globalInvLogs = (log || []).map(x => ({rowIdx: x.row_idx, time: Number(x.time), staff: x.staff, name: x.name, type: x.type, qtyChange: Number(x.qty_change), newQty: Number(x.new_qty), lot: x.lot, expiry: x.expiry, invoiceNo: x.invoice_no, orderNo: x.order_no, memo: x.memo, arrivalDate: x.arrival_date, snapshot: x.snapshot, internalCode: x.internal_code}));
+    globalDeliveries = (del || []).map(x => ({rowIdx: x.row_idx, time: Number(x.time), paperNo: x.paper_no, client: x.client, itemsStr: x.items_str, status: x.status, deliveryDate: x.delivery_date, deliveryMethod: x.delivery_method, memo: x.memo, signature: x.signature, staff: x.staff, orderNo: x.order_no, lot: x.lot, expiry: x.expiry}));
+    globalQuotes = (quo || []).map(x => ({rowIdx: x.row_idx, time: Number(x.time), quoteNo: x.quote_no, quoteDate: x.quote_date, client: x.client, status: x.status, jsonStr: x.json_str, useSeal: x.use_seal, mergeId: x.merge_id, staff: x.staff, memo: x.memo}));
+    
+    emailSettingsData.list = (em || []).map(x => ({email: x.email, memo: x.memo}));
+    emailSettingsData.selected = emailSettingsData.selected || [];
+    
+    myLastSyncTime = Date.now();
+}
+
+// ============================================================================
+// UI 全域刷新控制器 (避免重複撰寫)
+// ============================================================================
+function refreshAllUI() {
+    if (typeof window.populateAdminClientFilter === "function") window.populateAdminClientFilter();
+    if (typeof window.updateHistoryDropdowns === "function") window.updateHistoryDropdowns();
+    if (typeof window.populateLogDropdowns === "function") window.populateLogDropdowns();
+    if (typeof window.updateOrderClientDropdown === "function") window.updateOrderClientDropdown();
+    if (typeof window.renderEmailSettings === "function") window.renderEmailSettings();
+    
+    if(document.getElementById('sys-history') && document.getElementById('sys-history').style.display === 'block') { 
+        if (typeof window.renderHistory === "function") window.renderHistory(); 
+        if (typeof window.generateReport === "function") window.generateReport(); 
+    }
+    if(document.getElementById('sys-admin') && document.getElementById('sys-admin').style.display === 'block') { 
+        if (typeof window.renderAdminItems === "function") window.renderAdminItems(); 
+        if (typeof window.renderAdminClients === "function") window.renderAdminClients(); 
+    }
+    if(document.getElementById('sys-order') && document.getElementById('sys-order').style.display === 'block') {
+        if (typeof window.renderOrderList === "function") window.renderOrderList();
+    }
+    if(document.getElementById('sys-inventory') && document.getElementById('sys-inventory').style.display === 'block') { 
+        if (typeof window.renderInventory === "function") window.renderInventory(); 
+        if (typeof window.renderInvLogs === "function") window.renderInvLogs(); 
+        if (typeof window.renderShipments === "function") window.renderShipments(); 
+    }
+    if(document.getElementById('sys-quotation') && document.getElementById('sys-quotation').style.display === 'block') {
+        if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
+    }
+    if(document.getElementById('sys-delivery') && document.getElementById('sys-delivery').style.display === 'block') {
+        if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
+    }
+}
+
 function silentRefreshData() {
-    callApi('getInitData', {}).then(res => {
-        globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
-        globalQuotes = res.quotes || []; 
-        globalDeliveries = res.deliveries || []; 
-        if (res.emailSettings) emailSettingsData = res.emailSettings;
-        myLastSyncTime = res.serverSyncTime || Date.now();
-        
-        if (typeof window.populateAdminClientFilter === "function") window.populateAdminClientFilter();
-        if (typeof window.updateHistoryDropdowns === "function") window.updateHistoryDropdowns();
-        if (typeof window.populateLogDropdowns === "function") window.populateLogDropdowns();
-        if (typeof window.updateOrderClientDropdown === "function") window.updateOrderClientDropdown();
-        if (typeof window.renderEmailSettings === "function") window.renderEmailSettings();
-        
-        if(document.getElementById('sys-history') && document.getElementById('sys-history').style.display === 'block') { 
-            if (typeof window.renderHistory === "function") window.renderHistory(); 
-            if (typeof window.generateReport === "function") window.generateReport(); 
-        }
-        if(document.getElementById('sys-admin') && document.getElementById('sys-admin').style.display === 'block') { 
-            if (typeof window.renderAdminItems === "function") window.renderAdminItems(); 
-            if (typeof window.renderAdminClients === "function") window.renderAdminClients(); 
-        }
-        if(document.getElementById('sys-order') && document.getElementById('sys-order').style.display === 'block') {
-            if (typeof window.renderOrderList === "function") window.renderOrderList();
-        }
-        if(document.getElementById('sys-inventory') && document.getElementById('sys-inventory').style.display === 'block') { 
-            if (typeof window.renderInventory === "function") window.renderInventory(); 
-            if (typeof window.renderInvLogs === "function") window.renderInvLogs(); 
-            if (typeof window.renderShipments === "function") window.renderShipments(); 
-        }
-        if(document.getElementById('sys-quotation') && document.getElementById('sys-quotation').style.display === 'block') {
-            if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
-        }
-        if(document.getElementById('sys-delivery') && document.getElementById('sys-delivery').style.display === 'block') {
-            if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
-        }
-    }).catch(err => console.log('背景默默同步失敗:', err));
+    loadDataFromSupabase().then(() => {
+        refreshAllUI();
+    }).catch(err => console.log('背景靜默同步 Supabase 失敗:', err));
+}
+
+// ============================================================================
+// Supabase Realtime 即時監聽器 (0.1秒推播)
+// ============================================================================
+function setupSupabaseRealtime() {
+    supabase.channel('custom-all-channel')
+        .on('postgres_changes', { event: '*', schema: 'public' }, payload => {
+            console.log('🔄 Supabase 偵測到資料庫變更:', payload);
+            if (!isSyncing && bgSyncQueue.length === 0) {
+                silentRefreshData(); // 收到推播後自動更新畫面，不需重新整理
+            }
+        })
+        .subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+                console.log('✅ Supabase Realtime 即時監聽已啟動');
+            }
+        });
 }
 
 // ============================================================================
@@ -458,22 +630,15 @@ window.onload = function() {
     }
     
     // ============================================================================
-    // 【升級】智能心跳與靜默同步系統 (每 15 秒觸發)
+    // 智能心跳系統 (維持舊系統上線人數統計)
     // ============================================================================
     setInterval(() => { 
         if(document.getElementById('mainApp') && document.getElementById('mainApp').style.display === 'block') { 
             callApi('heartbeat', { uid: myUid }).then(res => { 
                 let count = typeof res === 'object' ? res.count : res;
-                let sTime = typeof res === 'object' ? res.serverSyncTime : null;
-                
                 if(document.getElementById('mqOnline')) document.getElementById('mqOnline').innerText = `👥 ${count} 人`; 
                 if(document.getElementById('navOnlineCount')) document.getElementById('navOnlineCount').innerText = `👥 ${count}`; 
-                
-                // 靜默更新：若遠端有更新，且本地沒有正在上傳的佇列，便在背景無感刷新
-                if (sTime && sTime > myLastSyncTime && !isSyncing && bgSyncQueue.length === 0) {
-                    console.log("偵測到背景資料更新，執行靜默同步...");
-                    silentRefreshData();
-                }
+                // 資料更新已被 Supabase Realtime 接管，此處僅保留人數統計
             }).catch(e => console.log('心跳同步失敗', e)); 
         } 
     }, 15000); 
@@ -498,23 +663,20 @@ window.loginSystem = function() {
 window.logout = function() { if(confirm("確定登出？")) { localStorage.removeItem('invStaffName'); localStorage.removeItem('invTokenExp'); location.reload(); } };
 
 window.initSystemData = function() {
-    document.getElementById('splashScreen').style.display = 'flex'; let fakeProgress = 10; setProgress(fakeProgress, '下載雲端資料庫...');
-    const intv = setInterval(() => { fakeProgress += (85 - fakeProgress) * 0.15; setProgress(fakeProgress); }, 500);
-    callApi('getInitData', {}).then(res => {
-        clearInterval(intv); setProgress(100, '✅ 準備完成！');
-        globalClients = res.clients || []; globalSuppliers = res.suppliers || []; globalCatalog = res.catalog || []; globalHistory = res.history || []; globalOrders = res.orders || []; globalInventory = res.inventory || []; globalSalesDetails = res.salesDetails || []; globalInvLogs = res.invLogs || [];
-        globalQuotes = res.quotes || []; 
-        globalDeliveries = res.deliveries || []; 
-        if (res.emailSettings) emailSettingsData = res.emailSettings;
-        myLastSyncTime = res.serverSyncTime || Date.now();
+    document.getElementById('splashScreen').style.display = 'flex'; let fakeProgress = 10; setProgress(fakeProgress, '🚀 從 Supabase 極速載入中...');
+    const intv = setInterval(() => { fakeProgress += (85 - fakeProgress) * 0.2; setProgress(fakeProgress); }, 100);
+    
+    // 【升級】直接從 Supabase 一次拉取全系統資料
+    loadDataFromSupabase().then(() => {
+        clearInterval(intv); setProgress(100, '✅ 載入完成！');
         
-        if (typeof window.populateAdminClientFilter === "function") window.populateAdminClientFilter();
-        if (typeof window.updateHistoryDropdowns === "function") window.updateHistoryDropdowns();
-        if (typeof window.populateLogDropdowns === "function") window.populateLogDropdowns();
-        if (typeof window.updateOrderClientDropdown === "function") window.updateOrderClientDropdown();
-        if (typeof window.renderEmailSettings === "function") window.renderEmailSettings();
+        refreshAllUI();
+        setupSupabaseRealtime(); // 啟動即時監聽
         
-        if(document.getElementById('mqMonthCount')) document.getElementById('mqMonthCount').innerText = `🧾 本月已開立 ${res.monthCount} 張`; 
+        const currentMonth = new Date().getMonth();
+        const monthCount = globalHistory.filter(h => new Date(h.time).getMonth() === currentMonth).length;
+        if(document.getElementById('mqMonthCount')) document.getElementById('mqMonthCount').innerText = `🧾 本月已開立 ${monthCount} 張`; 
+        
         let daysLeft = Math.ceil((parseInt(localStorage.getItem('invTokenExp')) - Date.now()) / 86400000); 
         if(document.getElementById('welcomeName')) document.getElementById('welcomeName').innerText = `👋 ${myName}`; 
         if(document.getElementById('tokenCountdown')) document.getElementById('tokenCountdown').innerText = `🔐 憑證效期：${daysLeft} 天`;
@@ -528,48 +690,14 @@ window.initSystemData = function() {
                 if(typeof window.renderOrderList === "function") window.renderOrderList(); 
             }, 500); 
         }, 500);
-    }).catch(e => { clearInterval(intv); alert("初始化失敗：" + e.message); });
+    }).catch(e => { clearInterval(intv); alert("初始化連線失敗：" + e.message); });
 };
 
 window.refreshData = function() {
-    showLoading("同步最新資料...");
-    callApi('getInitData', {}).then(res => {
-        globalClients = res.clients||[]; globalSuppliers = res.suppliers||[]; globalCatalog = res.catalog||[]; globalHistory = res.history||[]; globalOrders = res.orders||[]; globalInventory = res.inventory||[]; globalSalesDetails = res.salesDetails||[]; globalInvLogs = res.invLogs||[];
-        globalQuotes = res.quotes || []; 
-        globalDeliveries = res.deliveries || []; 
-        if (res.emailSettings) emailSettingsData = res.emailSettings;
-        myLastSyncTime = res.serverSyncTime || Date.now();
-        
-        if (typeof window.populateAdminClientFilter === "function") window.populateAdminClientFilter();
-        if (typeof window.updateHistoryDropdowns === "function") window.updateHistoryDropdowns();
-        if (typeof window.populateLogDropdowns === "function") window.populateLogDropdowns();
-        if (typeof window.updateOrderClientDropdown === "function") window.updateOrderClientDropdown();
-        if (typeof window.renderEmailSettings === "function") window.renderEmailSettings();
-        
-        hideLoading(); showToast('✅ 已同步');
-        
-        if(document.getElementById('sys-history') && document.getElementById('sys-history').style.display === 'block') { 
-            if (typeof window.renderHistory === "function") window.renderHistory(); 
-            if (typeof window.generateReport === "function") window.generateReport(); 
-        }
-        if(document.getElementById('sys-admin') && document.getElementById('sys-admin').style.display === 'block') { 
-            if (typeof window.renderAdminItems === "function") window.renderAdminItems(); 
-            if (typeof window.renderAdminClients === "function") window.renderAdminClients(); 
-        }
-        if(document.getElementById('sys-order') && document.getElementById('sys-order').style.display === 'block') {
-            if (typeof window.renderOrderList === "function") window.renderOrderList();
-        }
-        if(document.getElementById('sys-inventory') && document.getElementById('sys-inventory').style.display === 'block') { 
-            if (typeof window.renderInventory === "function") window.renderInventory(); 
-            if (typeof window.renderInvLogs === "function") window.renderInvLogs(); 
-            if (typeof window.renderShipments === "function") window.renderShipments(); 
-        }
-        if(document.getElementById('sys-quotation') && document.getElementById('sys-quotation').style.display === 'block') {
-            if (typeof window.renderQuotationList === "function") window.renderQuotationList(); 
-        }
-        if(document.getElementById('sys-delivery') && document.getElementById('sys-delivery').style.display === 'block') {
-            if (typeof window.renderDeliveryList === "function") window.renderDeliveryList(); 
-        }
+    showLoading("極速同步最新資料...");
+    loadDataFromSupabase().then(() => {
+        refreshAllUI();
+        hideLoading(); showToast('✅ 已同步至最新狀態');
     }).catch(err => { hideLoading(); alert("同步失敗：" + err.message); });
 };
 
