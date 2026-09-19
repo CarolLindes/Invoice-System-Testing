@@ -10,7 +10,9 @@ const API_URL = "https://script.google.com/macros/s/AKfycbxWzxfHYdw9qvcPtGpU2qjx
 // 🟢 新版系統 API 端點 (Supabase)
 const SUPABASE_URL = "https://dojhiznffztiyofkfdiu.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvamhpem5mZnp0aXlvZmtmZGl1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzk3MzYsImV4cCI6MjEwNTMxNTczNn0.reT6i25kO1d1V8p2fDMHOOPVxaUJfp9SxOFeg-_xFqI";
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// 🔥 修正：使用 supabaseClient 作為變數名稱，避開全域變數衝突
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ============================================================================
 // 全域變數與狀態管理
@@ -72,7 +74,7 @@ async function dualWriteToSupabase(action, payload) {
         // 依據不同行為，將資料極速寫入對應的 Supabase 表格
         if (action === 'saveOrderData') {
             const items = payload.items || [];
-            await supabase.from('orders').upsert({
+            await supabaseClient.from('orders').upsert({
                 row_idx: payload.rowIdx || Date.now(),
                 time: Date.now(), client: payload.clientName, order_no: payload.orderNo,
                 dept: payload.department, status: payload.status, json_str: JSON.stringify(items),
@@ -80,7 +82,7 @@ async function dualWriteToSupabase(action, payload) {
             });
         } 
         else if (action === 'submitInvoice') {
-            await supabase.from('invoices').insert({
+            await supabaseClient.from('invoices').insert({
                 row_idx: Date.now(), time: payload.invDate, staff: payload.staff,
                 client: payload.clientName, tax_id: payload.taxId, net: payload.netTotal,
                 tax: payload.tax, total: payload.totalWithTax, details: payload.detailsStr,
@@ -94,11 +96,11 @@ async function dualWriteToSupabase(action, payload) {
                     price: i.price, subtotal: i.subtotal, ship_status: '待出貨', shipped_qty: 0,
                     lot: '', expiry: ''
                 }));
-                await supabase.from('sales_details').insert(sdArr);
+                await supabaseClient.from('sales_details').insert(sdArr);
             }
         } 
         else if (action === 'adjustInventory') {
-            const { data: inv } = await supabase.from('inventory').select('*').eq('name', payload.name).single();
+            const { data: inv } = await supabaseClient.from('inventory').select('*').eq('name', payload.name).single();
             let currentNewQty = payload.changeQty;
             if (inv) {
                 currentNewQty = Number(inv.qty) + payload.changeQty;
@@ -108,7 +110,7 @@ async function dualWriteToSupabase(action, payload) {
                     if (bIdx >= 0) batches[bIdx].qty += payload.changeQty;
                     else batches.push({ lot: payload.lot, exp: payload.expiry, qty: payload.changeQty });
                 }
-                await supabase.from('inventory').update({ 
+                await supabaseClient.from('inventory').update({ 
                     qty: currentNewQty, cost: payload.cost, alert_qty: payload.alertQty,
                     supplier: payload.supplier, internal_code: payload.internalCode, 
                     batches_str: JSON.stringify(batches) 
@@ -116,13 +118,13 @@ async function dualWriteToSupabase(action, payload) {
             } else {
                 let newBatches = [];
                 if (payload.lot || payload.expiry) newBatches.push({ lot: payload.lot, exp: payload.expiry, qty: payload.changeQty });
-                await supabase.from('inventory').insert({
+                await supabaseClient.from('inventory').insert({
                     name: payload.name, qty: payload.changeQty, alert_qty: payload.alertQty,
                     cost: payload.cost, supplier: payload.supplier, internal_code: payload.internalCode,
                     batches_str: JSON.stringify(newBatches)
                 });
             }
-            await supabase.from('inventory_logs').insert({
+            await supabaseClient.from('inventory_logs').insert({
                 row_idx: Date.now(), time: Date.now(), staff: payload.staff, name: payload.name,
                 type: payload.type, qty_change: payload.changeQty, new_qty: currentNewQty,
                 lot: payload.lot, expiry: payload.expiry, invoice_no: payload.invoiceNo,
@@ -131,13 +133,13 @@ async function dualWriteToSupabase(action, payload) {
         } 
         else if (action === 'updateShipment') {
             for (let u of payload.updates) {
-                const { data: sd } = await supabase.from('sales_details').select('*').eq('row_idx', u.rowIdx).single();
+                const { data: sd } = await supabaseClient.from('sales_details').select('*').eq('row_idx', u.rowIdx).single();
                 if (sd) {
                     let newShipped = (sd.shipped_qty || 0) + u.shipQty;
                     let newStatus = newShipped >= sd.qty ? '已結案' : '部分出貨';
-                    await supabase.from('sales_details').update({ shipped_qty: newShipped, ship_status: newStatus }).eq('row_idx', u.rowIdx);
+                    await supabaseClient.from('sales_details').update({ shipped_qty: newShipped, ship_status: newStatus }).eq('row_idx', u.rowIdx);
                 }
-                const { data: inv } = await supabase.from('inventory').select('*').eq('name', u.name).single();
+                const { data: inv } = await supabaseClient.from('inventory').select('*').eq('name', u.name).single();
                 if (inv) {
                     let newQty = Number(inv.qty) - u.shipQty;
                     let batches = JSON.parse(inv.batches_str || '[]');
@@ -146,9 +148,9 @@ async function dualWriteToSupabase(action, payload) {
                         if (bIdx >= 0) batches[bIdx].qty -= u.shipQty;
                     }
                     batches = batches.filter(b => b.qty > 0);
-                    await supabase.from('inventory').update({ qty: newQty, batches_str: JSON.stringify(batches) }).eq('name', u.name);
+                    await supabaseClient.from('inventory').update({ qty: newQty, batches_str: JSON.stringify(batches) }).eq('name', u.name);
                     
-                    await supabase.from('inventory_logs').insert({
+                    await supabaseClient.from('inventory_logs').insert({
                         row_idx: Date.now() + Math.floor(Math.random() * 1000), time: Date.now(),
                         staff: payload.staff, name: u.name, type: '分批出貨', qty_change: -u.shipQty,
                         new_qty: newQty, lot: u.batchTarget || '', order_no: u.paperNo, memo: `單號: ${u.paperNo}`
@@ -157,7 +159,7 @@ async function dualWriteToSupabase(action, payload) {
             }
         } 
         else if (action === 'addClientData') {
-            await supabase.from('clients').insert({
+            await supabaseClient.from('clients').insert({
                 name: payload.clientName, tax_id: payload.taxId, address: payload.address, receive_dept: payload.receiveDept
             });
         }
@@ -375,17 +377,17 @@ async function loadDataFromSupabase() {
         {data: c}, {data: s}, {data: cat}, {data: inv}, {data: ord},
         {data: invc}, {data: sd}, {data: log}, {data: del}, {data: quo}, {data: em}
     ] = await Promise.all([
-        supabase.from('clients').select('*'),
-        supabase.from('suppliers').select('*'),
-        supabase.from('catalog').select('*'),
-        supabase.from('inventory').select('*'),
-        supabase.from('orders').select('*').order('row_idx', {ascending: false}),
-        supabase.from('invoices').select('*').order('row_idx', {ascending: false}),
-        supabase.from('sales_details').select('*').order('row_idx', {ascending: false}),
-        supabase.from('inventory_logs').select('*').order('row_idx', {ascending: false}),
-        supabase.from('deliveries').select('*').order('row_idx', {ascending: false}),
-        supabase.from('quotations').select('*').order('row_idx', {ascending: false}),
-        supabase.from('email_settings').select('*')
+        supabaseClient.from('clients').select('*'),
+        supabaseClient.from('suppliers').select('*'),
+        supabaseClient.from('catalog').select('*'),
+        supabaseClient.from('inventory').select('*'),
+        supabaseClient.from('orders').select('*').order('row_idx', {ascending: false}),
+        supabaseClient.from('invoices').select('*').order('row_idx', {ascending: false}),
+        supabaseClient.from('sales_details').select('*').order('row_idx', {ascending: false}),
+        supabaseClient.from('inventory_logs').select('*').order('row_idx', {ascending: false}),
+        supabaseClient.from('deliveries').select('*').order('row_idx', {ascending: false}),
+        supabaseClient.from('quotations').select('*').order('row_idx', {ascending: false}),
+        supabaseClient.from('email_settings').select('*')
     ]);
 
     // 將 Supabase 的蛇形命名 (snake_case) 自動轉換回系統適用的駝峰命名 (camelCase)
@@ -450,7 +452,7 @@ function silentRefreshData() {
 // Supabase Realtime 即時監聽器 (0.1秒推播)
 // ============================================================================
 function setupSupabaseRealtime() {
-    supabase.channel('custom-all-channel')
+    supabaseClient.channel('custom-all-channel')
         .on('postgres_changes', { event: '*', schema: 'public' }, payload => {
             console.log('🔄 Supabase 偵測到資料庫變更:', payload);
             if (!isSyncing && bgSyncQueue.length === 0) {
