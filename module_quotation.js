@@ -1,676 +1,530 @@
 /**
  * ============================================================================
- * 模組 5：估價單管理 (module_quotation.js) - 【含申請單位與 PDF 分享】
+ * 模組 5：開立估價單與動態列印 (module_quotation.js)
  * ============================================================================
  */
 
-let quoSearchText = "";
-let groupMergeQuoSelection = new Set();
-let quoClientMapForSearch = {};
-let quoItemSearchData = [];
+// 【新增】強大的日期淨化器：專門處理後台傳來的複雜台北標準時間，確保輸出純淨的 YYYY-MM-DD
+window.cleanDateStr = function(rawDate) {
+    if (!rawDate) return getTodayStr();
+    const d = new Date(rawDate);
+    if (isNaN(d.getTime())) return getTodayStr();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
 
 window.renderQuotationList = debounce(function() {
-    quoSearchText = document.getElementById('quoSearchInput').value.trim().toLowerCase();
-    const pendC = document.getElementById('quoPendingListContainer');
-    const verC = document.getElementById('quoVerifiedListContainer');
+    const searchTerm = document.getElementById('quoSearchInput').value.toLowerCase();
     
-    let pendHTML = ""; let verHTML = "";
-    
-    // 用 merge_id 來分群
-    let groups = {};
-    let noGroups = [];
-    
-    globalQuotes.forEach(q => {
-        let match = true;
-        if (quoSearchText) {
-            let itemText = "";
-            try {
-                let items = JSON.parse(q.jsonStr || '[]');
-                itemText = items.map(i => `${i.name} ${i.internalCode}`).join(" ");
-            } catch(e){}
-            const searchStr = `${q.quoteNo} ${q.client} ${itemText} ${q.memo} ${q.staff}`.toLowerCase();
-            if (!searchStr.includes(quoSearchText)) match = false;
-        }
-        
-        if (match) {
-            if (q.mergeId) {
-                if (!groups[q.mergeId]) groups[q.mergeId] = [];
-                groups[q.mergeId].push(q);
-            } else {
-                noGroups.push(q);
-            }
-        }
-    });
-
-    // 處理已合併群組
-    for (let mId in groups) {
-        let arr = groups[mId];
-        // 群組狀態由內部成員決定：若全為已核銷/歷史則歸類為 verified，否則為 pending
-        let isAllVerified = arr.every(q => q.status !== '待確認' && q.status !== '處理中');
-        let groupHTML = `
-        <div class="card mb-3 border-secondary shadow-sm">
-            <div class="card-header bg-light d-flex justify-content-between align-items-center">
-                <div class="fw-bold text-secondary">🔗 合併估價單群組</div>
-                <div>
-                    <span class="badge bg-secondary me-2">共 ${arr.length} 筆</span>
-                    <button class="btn btn-sm btn-outline-primary fw-bold" onclick="printMergedQuotation('${mId}')">🖨️ 合併列印</button>
-                    ${!isAllVerified ? `<button class="btn btn-sm btn-success fw-bold ms-2" onclick="convertMergedToOrder('${mId}')">✅ 轉訂單/發票</button>` : ''}
-                </div>
-            </div>
-            <div class="card-body p-2">
-                ${arr.map(q => buildQuoCard(q, true)).join('')}
-            </div>
-        </div>`;
-        if (isAllVerified) verHTML += groupHTML;
-        else pendHTML += groupHTML;
+    let filtered = globalQuotes;
+    if (searchTerm) {
+        filtered = filtered.filter(q => 
+            q.client.toLowerCase().includes(searchTerm) || 
+            q.quoteNo.toLowerCase().includes(searchTerm) || 
+            q.jsonStr.toLowerCase().includes(searchTerm)
+        );
     }
 
-    // 處理未合併單筆
-    noGroups.forEach(q => {
-        let card = buildQuoCard(q, false);
-        if (q.status === '待確認' || q.status === '處理中') pendHTML += card;
-        else verHTML += card;
-    });
+    let pending = filtered.filter(q => q.status === '待確認');
+    let verified = filtered.filter(q => q.status !== '待確認');
 
-    pendC.innerHTML = pendHTML || '<div class="text-center text-muted py-3">無符合的待確認估價單</div>';
-    verC.innerHTML = verHTML || '<div class="text-center text-muted py-3">無符合的歷史估價單</div>';
+    function buildQuoHtml(dataArr, isPendingTab) {
+        if(dataArr.length === 0) return '<div class="text-center text-muted py-4">目前沒有資料</div>';
+        
+        let groups = {};
+        dataArr.forEach(q => {
+            let gid = q.mergeId || `Single_${q.rowIdx}`;
+            if (!groups[gid]) groups[gid] = { isMerged: !!q.mergeId, client: q.client, quotes: [] };
+            groups[gid].quotes.push(q);
+        });
+
+        let html = '';
+        for (let gid in groups) {
+            const group = groups[gid];
+            const isMerged = group.isMerged;
+            
+            let titleHtml = `<div class="fw-bold text-dark fs-6">${group.client} ${isMerged ? '<span class="badge bg-primary ms-2">🔗 已合併</span>' : ''}</div>`;
+            
+            let allItemsDesc = group.quotes.map(q => {
+                let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+                let itemsStr = items.map(i => `<div>${i.name} <span class="badge bg-light text-dark border ms-1">x${i.qty}</span></div>`).join('');
+                
+                // 【套用日期淨化器】確保列表顯示乾淨的 YYYY/MM/DD
+                const cleanDate = cleanDateStr(q.quoteDate).replace(/-/g, '/');
+                
+                return `<div class="mt-2 pt-2 border-top">
+                            <span class="small fw-bold text-secondary">單號: ${q.quoteNo} (${cleanDate})</span>
+                            <div class="small text-muted mt-1">${itemsStr}</div>
+                        </div>`;
+            }).join('');
+
+            let actionBtns = '';
+            if (isPendingTab) {
+                actionBtns += `<button class="btn btn-sm btn-outline-info fw-bold me-1 text-dark" onclick="printQuotation('${gid}')">🖨️ 列印出單</button>`;
+                actionBtns += `<button class="btn btn-sm btn-outline-danger fw-bold me-1" onclick="voidQuotation('${gid}')">🗑️ 作廢</button>`;
+                if (!isMerged) {
+                    actionBtns += `<button class="btn btn-sm btn-outline-secondary fw-bold me-1" onclick="openQuotationModal(${group.quotes[0].rowIdx})">📝 編輯</button>`;
+                }
+                actionBtns += `<button class="btn btn-sm btn-success fw-bold text-white shadow-sm" onclick="verifyQuotationToInvoice('${gid}')">✅ 核銷轉發票</button>`;
+            } else {
+                let statusBadge = '';
+                if(group.quotes[0].status === '已核銷') statusBadge = '<span class="badge bg-success">已核銷</span>';
+                else if(group.quotes[0].status === '已作廢') statusBadge = '<span class="badge bg-danger">已作廢</span>';
+                actionBtns += statusBadge;
+            }
+
+            let checkboxHtml = '';
+            if (isPendingTab) {
+                const val = isMerged ? `M_${gid}` : `S_${group.quotes[0].rowIdx}`;
+                checkboxHtml = `<input class="form-check-input me-3 cb-quo" type="checkbox" value="${val}" data-client="${escapeQuotes(group.client)}" style="transform: scale(1.3); flex-shrink: 0;">`;
+            }
+
+            html += `<div class="item-row bg-white shadow-sm p-3 mb-3 ${isMerged ? 'border-primary' : ''}">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div class="d-flex align-items-center">
+                        ${checkboxHtml}
+                        ${titleHtml}
+                    </div>
+                    <div>${actionBtns}</div>
+                </div>
+                ${allItemsDesc}
+            </div>`;
+        }
+        return html;
+    }
+
+    document.getElementById('quoPendingListContainer').innerHTML = buildQuoHtml(pending, true);
+    document.getElementById('quoVerifiedListContainer').innerHTML = buildQuoHtml(verified, false);
+
 }, 300);
 
-function buildQuoCard(q, isGrouped) {
-    let items = [];
-    try { items = JSON.parse(q.jsonStr || '[]'); } catch(e){}
-    let total = items.reduce((sum, item) => sum + (Number(item.qty)*Number(item.price)), 0);
-    let dateStr = q.quoteDate;
-    
-    let badgeClass = "bg-warning text-dark";
-    if (q.status === '已核銷轉單') badgeClass = "bg-success";
-    else if (q.status === '已作廢') badgeClass = "bg-danger";
-    
-    const checked = groupMergeQuoSelection.has(q.rowIdx) ? 'checked' : '';
-    const checkboxHtml = isGrouped ? '' : `<input class="form-check-input me-2 mt-1 cb-quo-merge" type="checkbox" value="${q.rowIdx}" ${checked} onchange="toggleQuoMergeSelect(${q.rowIdx}, this.checked)" style="transform: scale(1.3);">`;
-
-    return `
-    <div class="card mb-2 border-0 shadow-sm" style="${isGrouped ? 'background-color: #f8f9fa;' : ''}">
-        <div class="card-body p-3">
-            <div class="d-flex justify-content-between mb-2">
-                <div class="d-flex align-items-start">
-                    ${checkboxHtml}
-                    <div>
-                        <div class="fw-bold fs-6 text-dark">${escapeQuotes(q.client)}</div>
-                        <div class="small text-muted">${q.quoteNo || '未編號'} | 👨‍💼 ${q.staff}</div>
-                    </div>
-                </div>
-                <div class="text-end">
-                    <span class="badge ${badgeClass} mb-1">${q.status}</span>
-                    <div class="text-primary fw-bold">$${Math.round(total).toLocaleString()}</div>
-                </div>
-            </div>
-            
-            <div class="small text-secondary mb-2 ms-${isGrouped ? '0' : '4'}">
-                ${items.map(i => `• ${escapeQuotes(i.name)} x${i.qty}`).join('<br>')}
-            </div>
-            
-            <div class="d-flex justify-content-between align-items-center ms-${isGrouped ? '0' : '4'} mt-2 pt-2 border-top">
-                <span class="small text-muted">📅 ${dateStr}</span>
-                <div class="btn-group">
-                    <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="printSingleQuotation(${q.rowIdx})">🖨️ 列印</button>
-                    ${(q.status === '待確認' || q.status === '處理中') ? `
-                        <button class="btn btn-sm btn-outline-primary fw-bold" onclick="openQuotationModal(${q.rowIdx})">✏️ 編輯</button>
-                        <button class="btn btn-sm btn-outline-danger fw-bold" onclick="openVoidQuotationItemsModal(${q.rowIdx})">✂️ 作廢</button>
-                        ${!isGrouped ? `<button class="btn btn-sm btn-outline-success fw-bold" onclick="convertSingleToOrder(${q.rowIdx})">✅ 核銷</button>` : ''}
-                    ` : ''}
-                </div>
-            </div>
-        </div>
-    </div>`;
-}
-
-// ============================================================================
-// 批次合併邏輯
-// ============================================================================
-window.toggleQuoMergeSelect = function(rowIdx, isChecked) {
-    if (isChecked) groupMergeQuoSelection.add(rowIdx);
-    else groupMergeQuoSelection.delete(rowIdx);
-};
-
-window.groupMergeQuotations = function() {
-    if (groupMergeQuoSelection.size < 2) return alert("請至少勾選兩筆估價單進行合併。");
-    
-    let clients = new Set();
-    let selectedQuotes = [];
-    groupMergeQuoSelection.forEach(id => {
-        let q = globalQuotes.find(x => x.rowIdx === id);
-        if(q) {
-            clients.add(q.client);
-            selectedQuotes.push(q);
-        }
-    });
-    
-    if (clients.size > 1) return alert("⚠️ 只能合併「相同客戶」的估價單！");
-    if (!confirm(`確定要將這 ${groupMergeQuoSelection.size} 筆估價單綁定為同一群組嗎？\n(合併後列印與轉單將會同時執行)`)) return;
-    
-    const newMergeId = 'M_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
-    const rowIndices = Array.from(groupMergeQuoSelection);
-    
-    rowIndices.forEach(id => {
-        let q = globalQuotes.find(x => x.rowIdx === id);
-        if(q) Object.assign(q, {mergeId: newMergeId});
-    });
-    
-    pushToSyncQueue('mergeQuotations', { rowIndices: rowIndices, mergeId: newMergeId });
-    groupMergeQuoSelection.clear();
-    renderQuotationList();
-    showToast("🔗 已綁定為合併估價單");
-};
-
-window.groupUnmergeQuotations = function() {
-    if (groupMergeQuoSelection.size === 0) return alert("請勾選要解除合併的估價單 (可單筆勾選)。");
-    if (!confirm("確定要將勾選的估價單從群組中解除綁定嗎？\n(解除後將恢復為獨立單據)")) return;
-    
-    const rowIndices = Array.from(groupMergeQuoSelection);
-    rowIndices.forEach(id => {
-        let q = globalQuotes.find(x => x.rowIdx === id);
-        if(q) Object.assign(q, {mergeId: ''});
-    });
-    
-    pushToSyncQueue('unmergeQuotations', { rowIndices: rowIndices });
-    groupMergeQuoSelection.clear();
-    renderQuotationList();
-    showToast("✂️ 已解除合併綁定");
-};
-
-// ============================================================================
-// 手動建立/編輯估價單 (支援申請單位)
-// ============================================================================
-window.openQuotationModal = function(rowIdx) {
+window.openQuotationModal = function(idx) {
     currentQuoItems = [];
-    if (rowIdx) {
-        const q = globalQuotes.find(x => x.rowIdx === rowIdx);
-        if (!q) return;
-        document.getElementById('e_quoRow').value = q.rowIdx;
-        document.getElementById('e_quoDate').value = q.quoteDate || getTodayStr();
-        document.getElementById('e_quoNo').value = q.quoteNo || '';
-        document.getElementById('e_quoClient').value = q.client || '';
-        document.getElementById('e_quoMemo').value = q.memo || '';
-        document.getElementById('e_quoUseSeal').checked = q.useSeal !== false;
+    document.getElementById('e_quoMemo').value = '';
+    document.getElementById('e_quoUseSeal').checked = true;
+
+    if(idx) {
+        const q = globalQuotes.find(x => x.rowIdx === idx);
+        document.getElementById('e_quoRow').value = idx;
         
-        // 嘗試自動反查該客戶的申請單位 (讀取 client 表)
-        let deptVal = "";
-        let cInfo = globalClients.find(c => c.name === q.client);
-        if(cInfo && cInfo.receiveDept) {
-             let depts = cInfo.receiveDept.split(/,|\n/).map(s=>s.trim()).filter(s=>s);
-             if(depts.length > 0) deptVal = depts[0]; // 預設帶入第一個
-        }
-        document.getElementById('e_quoDept').value = deptVal;
+        // 【套用日期淨化器】確保編輯時，原本的日期能正確塞入 <input type="date"> 中，不會消失或變成今天
+        document.getElementById('e_quoDate').value = cleanDateStr(q.quoteDate);
         
-        try { currentQuoItems = JSON.parse(q.jsonStr || '[]'); } catch(e){}
+        document.getElementById('e_quoNo').value = q.quoteNo;
+        document.getElementById('e_quoClient').value = q.client;
+        document.getElementById('e_quoUseSeal').checked = q.useSeal;
+        document.getElementById('e_quoMemo').value = q.memo || ''; 
+        
+        let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+        items.forEach(i => {
+            const rowId = `quo_${Date.now()}_${Math.random().toString(36).substr(2,5)}`;
+            currentQuoItems.push({ id: rowId, name: i.name||'', price: i.price||0, qty: i.qty||1, unit: i.unit||'式', brandModel: i.brandModel||'', memo: i.memo||'', showBrand: !!i.brandModel });
+        });
     } else {
-        document.getElementById('e_quoRow').value = "";
+        document.getElementById('e_quoRow').value = '';
         document.getElementById('e_quoDate').value = getTodayStr();
-        document.getElementById('e_quoNo').value = "";
-        document.getElementById('e_quoClient').value = "";
-        document.getElementById('e_quoDept').value = "";
-        document.getElementById('e_quoMemo').value = "";
-        document.getElementById('e_quoUseSeal').checked = true;
-        currentQuoItems = [{ id: Date.now().toString(), name: '', internalCode: '', qty: 1, unit: '式', price: 0 }];
+        document.getElementById('e_quoNo').value = '';
+        document.getElementById('e_quoClient').value = '';
+        document.getElementById('e_quoMemo').value = '';
+        addQuotationManualItemRow();
     }
-    
-    quoClientMapForSearch = {};
-    globalClients.forEach(c => quoClientMapForSearch[c.name] = c);
-    
     reRenderQuotationItems();
     bootstrap.Modal.getOrCreateInstance(document.getElementById('editQuoModal')).show();
 };
 
-window.selectClientForQuotation = function(clientName) {
-    document.getElementById('e_quoClient').value = clientName;
-    
-    // 自動帶入申請單位
-    let cInfo = globalClients.find(c => c.name === clientName);
-    if(cInfo && cInfo.receiveDept) {
-         let depts = cInfo.receiveDept.split(/,|\n/).map(s=>s.trim()).filter(s=>s);
-         if(depts.length > 0) document.getElementById('e_quoDept').value = depts[0];
-    }
-    
-    bootstrap.Modal.getInstance(document.getElementById('searchModal')).hide();
-    
-    quoItemSearchData = globalCatalog.filter(x => x.clientName === clientName);
-    currentQuoItems.forEach(item => {
-        let match = quoItemSearchData.find(x => x.productName === item.name);
-        if (match && item.price === 0) item.price = match.price;
-    });
-    reRenderQuotationItems();
-};
-
 window.addQuotationManualItemRow = function() {
-    currentQuoItems.push({ id: Date.now().toString(), name: '', internalCode: '', qty: 1, unit: '式', price: 0 });
+    const rowId = `quo_${Date.now()}_${Math.random().toString(36).substr(2,5)}`;
+    currentQuoItems.push({ id: rowId, name: '', price: 0, qty: 1, unit: '式', brandModel: '', memo: '', showBrand: false });
     reRenderQuotationItems();
 };
 
-window.removeQuotationItem = function(id) {
-    currentQuoItems = currentQuoItems.filter(x => x.id !== id);
-    reRenderQuotationItems();
-};
-
-window.reRenderQuotationItems = function() {
-    const container = document.getElementById('e_quoItemsContainer');
-    const clientName = document.getElementById('e_quoClient').value;
+window.renderSingleQuotationItem = function(item) {
+    let subtotal = (parseFloat(item.price) || 0) * (parseFloat(item.qty) || 0);
     
-    if(!quoItemSearchData.length && clientName) {
-         quoItemSearchData = globalCatalog.filter(x => x.clientName === clientName);
-    }
-
-    container.innerHTML = currentQuoItems.map((item, index) => {
-        let optionsHtml = quoItemSearchData.map(c => `<option value="${escapeQuotes(c.productName)}" data-code="${escapeQuotes(c.internalCode)}" data-price="${c.price}" data-unit="${escapeQuotes(c.unit)}">`).join('');
-        return `
-        <div class="row g-2 mb-2 align-items-end draggable-row bg-white p-2 border rounded shadow-sm" draggable="true" ondragstart="handleDragStart(event, '${item.id}', 'quotation')" ondragover="handleDragOver(event)" ondragenter="handleDragEnter(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event, '${item.id}', 'quotation')">
-            <div class="col-1 text-center" style="cursor: grab; color: #adb5bd; padding-bottom: 8px;">☰</div>
-            <div class="col-1 text-center"><span class="badge bg-secondary">${index + 1}</span></div>
-            <div class="col-4">
-                <label class="small text-muted fw-bold">品名</label>
-                <input type="text" class="form-control fw-bold" value="${escapeQuotes(item.name)}" list="dl_quo_${item.id}" onchange="updateQuoItemAuto(this, '${item.id}')">
-                <datalist id="dl_quo_${item.id}">${optionsHtml}</datalist>
+    return `<div class="item-row p-3 mb-2 bg-white border border-secondary shadow-sm draggable-row" id="${item.id}" draggable="true" ondragstart="handleDragStart(event, '${item.id}', 'quotation')" ondragover="handleDragOver(event)" ondrop="handleDrop(event, '${item.id}', 'quotation')" ondragenter="handleDragEnter(event)" ondragleave="handleDragLeave(event)">
+        <div class="drag-handle position-absolute" style="top:10px; left:10px; cursor:grab; font-size: 1.2rem; color: #adb5bd;" title="按住拖曳排序">☰</div>
+        <button class="btn btn-sm btn-outline-danger position-absolute" style="top:8px; right:8px;" onclick="removeQuotationItem('${item.id}')">✕</button>
+        
+        <div class="mb-2 pe-4 ps-4">
+            <label class="form-label small fw-bold text-muted mb-1">品名 <span class="text-danger">*</span></label>
+            <input type="text" class="form-control fake-input-btn form-control-sm fw-bold fs-6 border-primary" id="quo_name_${item.id}" value="${escapeQuotes(item.name)}" readonly placeholder="點此對應產品庫..." onclick="openSearchModal('item_quo_${item.id}', (val)=>selectProductForQuo('${item.id}', val))">
+        </div>
+        <div class="row g-2 ps-4 mb-2">
+            <div class="col-3"><label class="form-label small fw-bold text-muted mb-1">數量</label><input type="number" class="form-control form-control-sm fw-bold text-danger text-center" id="quo_qty_${item.id}" value="${item.qty}" min="0" step="any" oninput="updateQuoQty('${item.id}', this.value)"></div>
+            <div class="col-3"><label class="form-label small fw-bold text-muted mb-1">單位</label><input type="text" class="form-control form-control-sm text-center" id="quo_unit_${item.id}" value="${escapeQuotes(item.unit)}" oninput="updateQuoUnit('${item.id}', this.value)"></div>
+            <div class="col-3"><label class="form-label small fw-bold text-muted mb-1">單價(含稅)</label><input type="number" class="form-control form-control-sm text-end" id="quo_price_${item.id}" value="${item.price}" min="0" step="any" oninput="updateQuoPrice('${item.id}', this.value)"></div>
+            <div class="col-3"><label class="form-label small fw-bold text-muted mb-1">小計(含稅)</label><input type="text" class="form-control form-control-sm bg-light text-end fw-bold text-primary" value="$${Math.round(subtotal).toLocaleString()}" readonly></div>
+        </div>
+        <div class="row g-2 ps-4 align-items-end">
+            <div class="col-12">
+                <div class="form-check form-switch mb-1">
+                    <input class="form-check-input" type="checkbox" id="quo_showBrand_${item.id}" ${item.showBrand ? 'checked' : ''} onchange="toggleQuoBrand('${item.id}', this.checked)">
+                    <label class="form-check-label small fw-bold text-muted" for="quo_showBrand_${item.id}">需要填寫廠牌型號</label>
+                </div>
+                <div id="quo_brandBox_${item.id}" style="display: ${item.showBrand ? 'block' : 'none'};">
+                    <input type="text" class="form-control form-control-sm mb-2" placeholder="輸入廠牌型號..." value="${escapeQuotes(item.brandModel)}" oninput="updateQuoBrand('${item.id}', this.value)">
+                </div>
             </div>
-            <div class="col-2">
-                <label class="small text-muted fw-bold">長固代號</label>
-                <input type="text" class="form-control" value="${escapeQuotes(item.internalCode)}" oninput="updateQuoItemVal('${item.id}', 'internalCode', this.value)">
-            </div>
-            <div class="col-1">
-                <label class="small text-muted fw-bold">數量</label>
-                <input type="number" class="form-control fw-bold text-primary" value="${item.qty}" min="0.1" step="any" oninput="updateQuoItemVal('${item.id}', 'qty', this.value)">
-            </div>
-            <div class="col-1">
-                <label class="small text-muted fw-bold">單位</label>
-                <input type="text" class="form-control" value="${escapeQuotes(item.unit)}" oninput="updateQuoItemVal('${item.id}', 'unit', this.value)">
-            </div>
-            <div class="col-1">
-                <label class="small text-muted fw-bold">單價</label>
-                <input type="number" class="form-control" value="${item.price}" step="any" oninput="updateQuoItemVal('${item.id}', 'price', this.value)">
-            </div>
-            <div class="col-1 text-end">
-                <button class="btn btn-sm btn-outline-danger" onclick="removeQuotationItem('${item.id}')">✖</button>
-            </div>
-        </div>`;
-    }).join('');
+            <div class="col-12"><label class="form-label small fw-bold text-muted mb-1">單項備註</label><input type="text" class="form-control form-control-sm text-secondary" placeholder="選填..." value="${escapeQuotes(item.memo)}" oninput="updateQuoMemo('${item.id}', this.value)"></div>
+        </div>
+    </div>`;
 };
 
-window.updateQuoItemVal = function(id, field, val) {
-    let item = currentQuoItems.find(x => x.id === id);
-    if(item) {
-        if(field==='qty' || field==='price') item[field] = Number(val) || 0;
-        else item[field] = val;
-    }
+window.reRenderQuotationItems = function() { 
+    document.getElementById('e_quoItemsContainer').innerHTML = currentQuoItems.map(renderSingleQuotationItem).join(''); 
 };
 
-window.updateQuoItemAuto = function(inputEl, id) {
-    let val = inputEl.value;
-    let item = currentQuoItems.find(x => x.id === id);
-    if(item) {
-        item.name = val;
-        let match = quoItemSearchData.find(x => x.productName === val);
-        if(match) {
-            item.internalCode = match.internalCode || item.internalCode;
-            item.price = match.price || item.price;
-            item.unit = match.unit || item.unit;
+window.selectClientForQuotation = function(val) {
+    document.getElementById('e_quoClient').value = val;
+    currentQuoItems = [];
+    addQuotationManualItemRow();
+};
+
+window.selectProductForQuo = function(rowId, prodName) {
+    const client = document.getElementById('e_quoClient').value;
+    const p = globalCatalog.find(x => x.clientName === client && x.productName === prodName);
+    if(p) {
+        const item = currentQuoItems.find(x => x.id === rowId);
+        if(item) {
+            item.name = p.productName;
+            item.price = p.price || 0;
+            item.unit = p.unit || '式';
         }
+        reRenderQuotationItems();
     }
-    reRenderQuotationItems();
 };
+
+window.updateQuoQty = function(id, val) { const item = currentQuoItems.find(x=>x.id===id); if(item) { item.qty = Math.max(0, parseFloat(val)||0); reRenderQuotationItems(); } };
+window.updateQuoUnit = function(id, val) { const item = currentQuoItems.find(x=>x.id===id); if(item) { item.unit = val; } };
+window.updateQuoPrice = function(id, val) { const item = currentQuoItems.find(x=>x.id===id); if(item) { item.price = Math.max(0, parseFloat(val)||0); reRenderQuotationItems(); } };
+window.updateQuoBrand = function(id, val) { const item = currentQuoItems.find(x=>x.id===id); if(item) item.brandModel = val; };
+window.updateQuoMemo = function(id, val) { const item = currentQuoItems.find(x=>x.id===id); if(item) item.memo = val; };
+window.toggleQuoBrand = function(id, isChecked) { const item = currentQuoItems.find(x=>x.id===id); if(item) { item.showBrand = isChecked; reRenderQuotationItems(); } };
+window.removeQuotationItem = function(id) { currentQuoItems = currentQuoItems.filter(x=>x.id!==id); reRenderQuotationItems(); };
 
 window.saveEditQuotation = function() {
-    let clientName = document.getElementById('e_quoClient').value.trim();
-    if (!clientName) return alert("請選擇客戶");
-    let validItems = currentQuoItems.filter(i => i.name.trim() !== "");
-    if (validItems.length === 0) return alert("請至少輸入一項品項");
+    const idx = document.getElementById('e_quoRow').value;
+    const date = document.getElementById('e_quoDate').value;
+    const no = document.getElementById('e_quoNo').value.trim();
+    const client = document.getElementById('e_quoClient').value;
+    const useSeal = document.getElementById('e_quoUseSeal').checked;
+    const memo = document.getElementById('e_quoMemo').value.trim(); 
     
-    let deptName = document.getElementById('e_quoDept').value.trim();
-    let rowIdx = document.getElementById('e_quoRow').value;
-    let payload = {
-        rowIdx: rowIdx ? Number(rowIdx) : Date.now(),
-        quoteNo: document.getElementById('e_quoNo').value.trim() || 'QUO-' + getTodayStr().replace(/-/g,'') + '-' + Math.floor(Math.random()*1000),
-        quoteDate: document.getElementById('e_quoDate').value,
-        clientName: clientName,
-        deptName: deptName, // 傳送申請單位供後端連動
-        items: validItems,
-        memo: document.getElementById('e_quoMemo').value.trim(),
-        useSeal: document.getElementById('e_quoUseSeal').checked,
-        staff: myName,
-        status: '待確認'
-    };
+    if(!date || !no || !client) return alert("估價日期、編號與客戶名稱皆為必填！");
     
-    let existing = globalQuotes.find(x => x.rowIdx === payload.rowIdx);
-    if(existing) {
-        Object.assign(existing, {
-            quoteNo: payload.quoteNo, quoteDate: payload.quoteDate, client: payload.clientName,
-            jsonStr: JSON.stringify(payload.items), useSeal: payload.useSeal, memo: payload.memo
-        });
-        payload.mergeId = existing.mergeId;
-    } else {
-        globalQuotes.unshift({
-            rowIdx: payload.rowIdx, time: Date.now(), quoteNo: payload.quoteNo, quoteDate: payload.quoteDate,
-            client: payload.clientName, status: payload.status, jsonStr: JSON.stringify(payload.items),
-            useSeal: payload.useSeal, staff: payload.staff, memo: payload.memo, mergeId: ''
-        });
+    let items = [];
+    for(let i of currentQuoItems) {
+        if(!i.name || i.qty <= 0) return alert("所有品項必須填寫名稱且數量需大於0！");
+        items.push({ name: i.name, qty: i.qty, unit: i.unit, price: i.price, brandModel: i.showBrand ? i.brandModel : '', memo: i.memo });
     }
-    
-    pushToSyncQueue('saveQuotation', payload);
+    if(items.length === 0) return alert("請至少新增一項品項！");
+
+    const payload = { rowIdx: idx ? parseInt(idx) : null, quoteDate: date, quoteNo: no, clientName: client, useSeal: useSeal, items: items, status: '待確認', staff: myName, memo: memo };
+
+    if(idx) {
+        const q = globalQuotes.find(x => x.rowIdx === parseInt(idx));
+        if(q) { q.quoteDate=date; q.quoteNo=no; q.client=client; q.useSeal=useSeal; q.jsonStr=JSON.stringify(items); q.memo=memo; }
+    } else {
+        globalQuotes.unshift({ rowIdx: Date.now(), time: Date.now(), quoteNo: no, quoteDate: date, client: client, status: '待確認', jsonStr: JSON.stringify(items), useSeal: useSeal, mergeId: '', staff: myName, memo: memo });
+    }
+
+    pushToSyncQueue('saveQuotation', payload, null);
+    window.renderQuotationList();
     bootstrap.Modal.getInstance(document.getElementById('editQuoModal')).hide();
-    renderQuotationList();
     showToast("💾 估價單已儲存");
 };
 
-// ============================================================================
-// 作廢估價單品項 (拆分)
-// ============================================================================
-window.openVoidQuotationItemsModal = function(rowIdx) {
-    const q = globalQuotes.find(x => x.rowIdx === rowIdx);
-    if (!q) return;
-    document.getElementById('vq_rowIdx').value = q.rowIdx;
-    let items = [];
-    try { items = JSON.parse(q.jsonStr || '[]'); } catch(e){}
+window.groupMergeQuotations = function() {
+    const cbs = document.querySelectorAll('.cb-quo:checked');
+    if(cbs.length < 2) return alert('請至少勾選 2 筆估價單進行合併！');
     
-    let html = items.map((i, idx) => `
-        <div class="form-check mb-2">
-            <input class="form-check-input vq-item-cb" type="checkbox" value="${idx}" id="vq_cb_${idx}" style="transform: scale(1.3); margin-right: 10px;">
-            <label class="form-check-label fw-bold" for="vq_cb_${idx}">${escapeQuotes(i.name)} (x${i.qty})</label>
-        </div>
-    `).join('');
+    let client = ''; let valid = true; let idsToMerge = [];
+    cbs.forEach(cb => {
+        if(!client) client = cb.dataset.client; else if(client !== cb.dataset.client) valid = false;
+        const val = cb.value;
+        if(val.startsWith('M_')) {
+            const groupQuotes = globalQuotes.filter(q => q.mergeId === val.replace('M_',''));
+            idsToMerge.push(...groupQuotes.map(q => q.rowIdx));
+        } else {
+            idsToMerge.push(parseInt(val.replace('S_','')));
+        }
+    });
+
+    if(!valid) return alert('⚠️ 合併防呆：不可將「不同客戶」的估價單合併在一起！請重新勾選。');
+    const newMergeId = 'MG_' + Date.now() + '_' + Math.random().toString(36).substr(2,4);
     
-    document.getElementById('vq_itemsList').innerHTML = html;
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('voidQuoItemsModal')).show();
+    globalQuotes.forEach(q => { if(idsToMerge.includes(q.rowIdx)) q.mergeId = newMergeId; });
+    pushToSyncQueue('mergeQuotations', { rowIndices: idsToMerge, mergeId: newMergeId }, null);
+    window.renderQuotationList();
+    showToast("🔗 估價單已成功合併！");
+};
+
+window.groupUnmergeQuotations = function() {
+    const cbs = document.querySelectorAll('.cb-quo:checked');
+    if(cbs.length === 0) return alert('請先勾選已合併的估價單群組！');
+    
+    let idsToUnmerge = [];
+    cbs.forEach(cb => {
+        const val = cb.value;
+        if(val.startsWith('M_')) {
+            const groupQuotes = globalQuotes.filter(q => q.mergeId === val.replace('M_',''));
+            idsToUnmerge.push(...groupQuotes.map(q => q.rowIdx));
+        }
+    });
+
+    if(idsToUnmerge.length === 0) return showToast("勾選的皆為單筆估價單，不需解除合併。");
+    globalQuotes.forEach(q => { if(idsToUnmerge.includes(q.rowIdx)) q.mergeId = ''; });
+    pushToSyncQueue('unmergeQuotations', { rowIndices: idsToUnmerge }, null);
+    window.renderQuotationList();
+    showToast("✂️ 已解除合併拆分為單筆！");
+};
+
+let tempVoidGroupData = []; 
+
+window.voidQuotation = function(gid) {
+    const quotesInGroup = globalQuotes.filter(q => q.mergeId === gid || `Single_${q.rowIdx}` === gid);
+    if(quotesInGroup.length === 0) return;
+
+    let allItems = [];
+    quotesInGroup.forEach(q => {
+        let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+        items.forEach(i => { i.sourceRowIdx = q.rowIdx; i.sourceQuoteNo = q.quoteNo; allItems.push(i); });
+    });
+
+    if(allItems.length <= 1) {
+        if(confirm("確定要將此估價單作廢嗎？")) {
+            const ids = quotesInGroup.map(q => q.rowIdx);
+            quotesInGroup.forEach(q => q.status = '已作廢');
+            pushToSyncQueue('updateQuotationStatus', { rowIndices: ids, status: '已作廢' }, null);
+            window.renderQuotationList();
+        }
+    } else {
+        tempVoidGroupData = quotesInGroup;
+        let html = allItems.map((item, idx) => {
+            return `<div class="form-check mb-2 p-2 border-bottom"><input class="form-check-input cb-void-item" type="checkbox" value="${idx}" id="cb_void_${idx}" style="transform: scale(1.3); margin-right: 10px;"><label class="form-check-label fw-bold" for="cb_void_${idx}">${item.name} <span class="badge bg-secondary ms-1">x${item.qty}</span><div class="small text-muted fw-normal mt-1">來源: ${item.sourceQuoteNo}</div></label></div>`;
+        }).join('');
+        document.getElementById('vq_itemsList').innerHTML = html;
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('voidQuoItemsModal')).show();
+    }
 };
 
 window.confirmVoidQuotationItems = function() {
-    let rowIdx = Number(document.getElementById('vq_rowIdx').value);
-    const q = globalQuotes.find(x => x.rowIdx === rowIdx);
-    if (!q) return;
-    
-    let checkboxes = document.querySelectorAll('.vq-item-cb');
-    let toVoidIndices = [];
-    checkboxes.forEach(cb => { if(cb.checked) toVoidIndices.push(Number(cb.value)); });
-    
-    if (toVoidIndices.length === 0) return alert("請勾選要作廢的品項");
-    
-    let items = [];
-    try { items = JSON.parse(q.jsonStr || '[]'); } catch(e){}
-    
-    if (toVoidIndices.length === items.length) {
-        if(!confirm("您勾選了所有品項，這將會直接把整張估價單標記為「已作廢」。確定嗎？")) return;
-        q.status = '已作廢';
-        pushToSyncQueue('updateQuotationStatus', { rowIdx: q.rowIdx, status: '已作廢' });
-    } else {
-        let keepItems = []; let voidItems = [];
-        items.forEach((item, idx) => {
-            if (toVoidIndices.includes(idx)) voidItems.push(item);
-            else keepItems.push(item);
-        });
-        
-        q.jsonStr = JSON.stringify(keepItems);
-        let newVoidQ = {
-            rowIdx: Date.now(), time: Date.now(), quoteNo: q.quoteNo + '-V', quoteDate: q.quoteDate,
-            client: q.client, status: '已作廢', jsonStr: JSON.stringify(voidItems),
-            useSeal: q.useSeal, staff: q.staff, memo: q.memo + ' (部份作廢拆分)', mergeId: ''
-        };
-        globalQuotes.unshift(newVoidQ);
-        
-        pushToSyncQueue('splitAndVoidQuotationItems', {
-            originalRowIdx: q.rowIdx, keepItems: keepItems, voidQuoteData: newVoidQ
-        });
-        showToast("✂️ 已拆分作廢品項");
-    }
-    
-    bootstrap.Modal.getInstance(document.getElementById('voidQuoItemsModal')).hide();
-    renderQuotationList();
-};
+    const cbs = document.querySelectorAll('.cb-void-item:checked');
+    if(cbs.length === 0) return alert('請至少勾選一項要作廢的品項！');
 
-// ============================================================================
-// 轉單 (核銷估價單轉發票與訂貨)
-// ============================================================================
-window.convertSingleToOrder = function(rowIdx) {
-    const q = globalQuotes.find(x => x.rowIdx === rowIdx);
-    if(!q) return;
-    if(!confirm(`確定要將估價單 ${q.quoteNo || ''} 核銷轉入訂單系統嗎？\n(轉單後將無法再修改此估價單)`)) return;
-    executeConvert([q]);
-};
-
-window.convertMergedToOrder = function(mergeId) {
-    const qs = globalQuotes.filter(x => x.mergeId === mergeId && (x.status === '待確認' || x.status === '處理中'));
-    if(qs.length === 0) return alert("此群組中沒有可轉單的估價單。");
-    if(!confirm(`確定要將這 ${qs.length} 筆估價單合併轉入訂單系統嗎？`)) return;
-    executeConvert(qs);
-};
-
-function executeConvert(quoteArr) {
     let allItems = [];
-    let clientName = quoteArr[0].client;
-    let memoLines = [];
-    
-    quoteArr.forEach(q => {
-        q.status = '已核銷轉單';
-        pushToSyncQueue('updateQuotationStatus', { rowIdx: q.rowIdx, status: '已核銷轉單' });
-        try {
-            let items = JSON.parse(q.jsonStr || '[]');
-            items.forEach(i => allItems.push(i));
-        } catch(e){}
-        if(q.quoteNo) memoLines.push(q.quoteNo);
+    tempVoidGroupData.forEach(q => {
+        let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+        items.forEach(i => { i.sourceRowIdx = q.rowIdx; allItems.push(i); });
     });
-    
-    let deptVal = "";
-    let cInfo = globalClients.find(c => c.name === clientName);
-    if(cInfo && cInfo.receiveDept) {
-         let depts = cInfo.receiveDept.split(/,|\n/).map(s=>s.trim()).filter(s=>s);
-         if(depts.length > 0) deptVal = depts[0];
+
+    if(cbs.length === allItems.length) {
+        const ids = tempVoidGroupData.map(q => q.rowIdx);
+        tempVoidGroupData.forEach(q => q.status = '已作廢');
+        pushToSyncQueue('updateQuotationStatus', { rowIndices: ids, status: '已作廢' }, null);
+        window.renderQuotationList();
+        bootstrap.Modal.getInstance(document.getElementById('voidQuoItemsModal')).hide();
+        return;
     }
+
+    let selectedIndices = Array.from(cbs).map(cb => parseInt(cb.value));
     
-    let newOrderPayload = {
-        rowIdx: Date.now(),
-        clientName: clientName,
-        orderNo: memoLines.join(', '),
-        department: deptVal,
-        deadline: '',
-        source: '估價轉單',
-        mailUrl: '',
-        status: '未結案',
-        items: allItems
-    };
-    
-    globalOrders.unshift({
-        rowIdx: newOrderPayload.rowIdx, time: Date.now(), client: newOrderPayload.clientName,
-        orderNo: newOrderPayload.orderNo, dept: newOrderPayload.department, status: newOrderPayload.status,
-        jsonStr: JSON.stringify(newOrderPayload.items), deadline: newOrderPayload.deadline,
-        source: newOrderPayload.source, mailUrl: newOrderPayload.mailUrl
+    tempVoidGroupData.forEach(q => {
+        let origItems = []; try { origItems = JSON.parse(q.jsonStr); } catch(e){}
+        let keepItems = []; let voidItems = [];
+        
+        origItems.forEach(oi => {
+            let matchIdx = allItems.findIndex(ai => ai.sourceRowIdx === q.rowIdx && ai.name === oi.name && ai.qty === oi.qty);
+            if(selectedIndices.includes(matchIdx)) {
+                voidItems.push(oi);
+                selectedIndices = selectedIndices.filter(x => x !== matchIdx);
+            } else { keepItems.push(oi); }
+        });
+
+        if(voidItems.length > 0) {
+            q.jsonStr = JSON.stringify(keepItems);
+            globalQuotes.unshift({ rowIdx: Date.now()+Math.random(), time: Date.now(), quoteNo: q.quoteNo+"-作廢", quoteDate: q.quoteDate, client: q.client, status: '已作廢', jsonStr: JSON.stringify(voidItems), useSeal: q.useSeal, mergeId: '', staff: myName, memo: q.memo });
+            
+            pushToSyncQueue('splitAndVoidQuotationItems', {
+                rowIdx: q.rowIdx, quoteNo: q.quoteNo, quoteDate: q.quoteDate, clientName: q.client, useSeal: q.useSeal, staff: myName, keepItems: keepItems, voidItems: voidItems
+            }, null);
+        }
     });
+
+    window.renderQuotationList();
+    bootstrap.Modal.getInstance(document.getElementById('voidQuoItemsModal')).hide();
+    showToast("🗑️ 指定品項已成功拆分並作廢！");
+};
+
+window.verifyQuotationToInvoice = function(gid) {
+    const quotesInGroup = globalQuotes.filter(q => q.mergeId === gid || `Single_${q.rowIdx}` === gid);
+    if(quotesInGroup.length === 0) return;
+
+    const clientName = quotesInGroup[0].client;
+    const cObj = globalClients.find(x => x.name === clientName);
+    const taxId = cObj ? cObj.taxId : '';
+    const quoteNos = quotesInGroup.map(q => q.quoteNo).join(', ');
+
+    enterSystem('invoice');
+    document.getElementById('invClientInput').value = clientName; 
+    currentInvoiceData.clientName = clientName; 
+    currentInvoiceData.taxId = taxId; 
+    document.getElementById('invClientInfo').innerText = `✓ 綁定成功 (統編: ${taxId||'無'})`; 
+    document.getElementById('invClientInfo').style.display = 'block'; 
+    document.getElementById('btnNext1').style.display = 'block'; 
+    document.getElementById('invOrderNo').value = `[估價單核銷]-${quoteNos}`;
+    currentInvoiceData.items = [];
+    document.getElementById('invAiNotice').style.display = 'block';
     
-    pushToSyncQueue('saveOrderData', newOrderPayload);
-    showToast("✅ 已成功核銷轉單，請至「訂單辨識建檔」查看");
-    renderQuotationList();
-}
+    quotesInGroup.forEach(q => {
+        let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+        items.forEach(i => {
+            const rowId = `invR_${Date.now()}_${Math.random().toString(36).substring(2)}`; 
+            const p = globalCatalog.find(x => x.clientName === clientName && x.productName === i.name);
+            let internalCode = p ? (p.internalCode || p.assetCode) : '';
+            let fullMemo = ((i.brandModel ? i.brandModel + ' ' : '') + (i.memo || '')).trim();
 
-// ============================================================================
-// 估價單列印與 PDF 分享邏輯 (升級版)
-// ============================================================================
-window.printSingleQuotation = function(rowIdx) {
-    const q = globalQuotes.find(x => x.rowIdx === rowIdx);
-    if(!q) return;
-    generatePrintQuoteHtml([q]);
+            currentInvoiceData.items.push({ 
+                id: rowId, 
+                product: { productName: i.name, unit: i.unit, price: i.price, internalCode: internalCode }, 
+                qty: i.qty, orderRef: q.quoteNo, deptRef: fullMemo 
+            });
+        });
+    });
+
+    const ids = quotesInGroup.map(q => q.rowIdx);
+    quotesInGroup.forEach(q => q.status = '已核銷');
+    pushToSyncQueue('updateQuotationStatus', { rowIndices: ids, status: '已核銷' }, null);
+
+    if (typeof window.reRenderInvoiceItems === "function") window.reRenderInvoiceItems();
+    if (typeof window.goStep === "function") window.goStep(2); 
+    showToast("✅ 已將估價單品項全數載入發票系統！您可以自由刪減本次要開立的品項 (每張發票限5筆)。");
 };
 
-window.printMergedQuotation = function(mergeId) {
-    const qs = globalQuotes.filter(x => x.mergeId === mergeId && x.status !== '已作廢');
-    if(qs.length === 0) return alert("無有效估價單可列印");
-    generatePrintQuoteHtml(qs);
-};
+// ============================================================================
+// 列印估價單 (支援 A4 舒展排版、過濾日期、真實公司大印章)
+// ============================================================================
+window.printQuotation = function(gid) {
+    const quotesInGroup = globalQuotes.filter(q => q.mergeId === gid || `Single_${q.rowIdx}` === gid);
+    if (quotesInGroup.length === 0) return;
 
-function generatePrintQuoteHtml(quoteArr) {
-    const printArea = document.getElementById('printQuoteArea');
-    if(!printArea) return;
-    applyPrintStyle('A4', 'portrait');
+    const clientName = quotesInGroup[0].client;
+    const quoteNos = quotesInGroup.map(q => q.quoteNo).join(', ');
+    
+    // 【套用日期淨化器】確保列印紙本的日期永遠乾淨，顯示 YYYY/MM/DD
+    const rawDate = quotesInGroup[0].quoteDate || getTodayStr();
+    const dateStr = cleanDateStr(rawDate).replace(/-/g, '/');
+    
+    const useSeal = quotesInGroup[0].useSeal;
+    
+    // 合併備註
+    const mainMemo = quotesInGroup.map(q => q.memo).filter(x => x).join(' / ');
 
-    // 建立分享按鈕 (呼叫 sharePdf)
-    let shareBtn = document.createElement('button');
-    shareBtn.id = 'btnSharePdf';
-    shareBtn.className = 'btn btn-success fw-bold px-4 py-2 fs-5 shadow-sm me-3 d-print-none';
-    shareBtn.innerHTML = '📤 分享檔案 (PDF)';
-    shareBtn.onclick = () => sharePdf('printQuoteArea', `估價單_${quoteArr[0].client}_${getTodayStr()}.pdf`);
+    // 取出品項
+    let allItems = [];
+    quotesInGroup.forEach(q => {
+        let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
+        allItems.push(...items);
+    });
 
-    // 確保 controlBar 存在並插入分享按鈕
-    let checkInterval = setInterval(() => {
-        let controlBar = document.getElementById('printControlBar');
-        if (controlBar && !document.getElementById('btnSharePdf')) {
-            controlBar.insertBefore(shareBtn, controlBar.children[1]); // 放在關閉按鈕前面
-            clearInterval(checkInterval);
-        }
-    }, 100);
+    let totalAmount = 0;
+    
+    // 渲染表格內容
+    let tbodyHtml = allItems.map((item, idx) => {
+        const price = parseFloat(item.price) || 0;
+        const qty = parseFloat(item.qty) || 0;
+        const subtotal = Math.round(price * qty); 
+        totalAmount += subtotal;
 
-    let html = "";
-    quoteArr.forEach((q, index) => {
-        let items = [];
-        try { items = JSON.parse(q.jsonStr || '[]'); } catch(e){}
-        
-        let subtotalNet = 0;
-        let tbodyHtml = items.map(item => {
-            let price = Number(item.price) || 0;
-            let qty = Number(item.qty) || 0;
-            let ext = price * qty;
-            subtotalNet += ext;
-            return `<tr><td class="text-start ps-2">${escapeQuotes(item.name)}</td><td class="text-center">${qty}</td><td class="text-center">${escapeQuotes(item.unit)}</td><td class="text-end pe-2">${Math.round(price).toLocaleString()}</td><td class="text-end pe-2">${Math.round(ext).toLocaleString()}</td><td class="text-center">${escapeQuotes(item.internalCode)}</td></tr>`;
-        }).join('');
-        
-        // 估價單一律採用「未稅單價加總後，再加上 5% 稅金」的計算邏輯
-        let tax = Math.round(subtotalNet * 0.05);
-        let total = subtotalNet + tax;
-        
-        let deptStr = "";
-        let cInfo = globalClients.find(c => c.name === q.client);
-        if(cInfo && cInfo.receiveDept) {
-            let depts = cInfo.receiveDept.split(/,|\n/).map(s=>s.trim()).filter(s=>s);
-            if(depts.length > 0) deptStr = depts[0];
-        }
+        let extDesc = [];
+        if (item.brandModel) extDesc.push(`廠牌型號: ${item.brandModel}`);
+        if (item.memo) extDesc.push(item.memo);
+        let descHtml = extDesc.length > 0 ? `<div style="font-size: 0.85em; color: #555; margin-top: 4px;">${escapeQuotes(extDesc.join(' | '))}</div>` : '';
 
-        let sealHtml = q.useSeal ? `
-            <div style="position: absolute; right: 80px; bottom: 30px; opacity: 0.8; z-index: 10;">
-                <img src="https://i.imgur.com/KzXG89O.png" style="width: 150px; height: auto;">
-            </div>` : '';
+        return `
+            <tr>
+                <td style="border: 1px solid #000; padding: 12px; text-align: center;">${idx + 1}</td>
+                <td style="border: 1px solid #000; padding: 12px; text-align: left;">
+                    <div style="font-weight: bold;">${escapeQuotes(item.name)}</div>
+                    ${descHtml}
+                </td>
+                <td style="border: 1px solid #000; padding: 12px; text-align: center;">${qty}</td>
+                <td style="border: 1px solid #000; padding: 12px; text-align: center;">${escapeQuotes(item.unit)}</td>
+                <td style="border: 1px solid #000; padding: 12px; text-align: right;">$${price.toLocaleString()}</td>
+                <td style="border: 1px solid #000; padding: 12px; text-align: right; font-weight: bold;">$${subtotal.toLocaleString()}</td>
+            </tr>
+        `;
+    }).join('');
+
+    const sealHtml = useSeal ? `
+        <div style="position: absolute; right: 50px; bottom: 10px; display: flex; align-items: flex-end; pointer-events: none; z-index: 10; opacity: 0.95;">
+            <img src="https://drive.google.com/thumbnail?id=1f6zlONs70zTGucx1h5ttJD1OLzyygXuu&sz=w800" alt="大章" style="width: 150px; height: auto; mix-blend-mode: multiply;">
+        </div>
+    ` : '';
+
+    const html = `
+        <div style="padding: 10mm 15mm; max-width: 800px; margin: 0 auto; position: relative; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000; background: #fff; box-sizing: border-box; min-height: 280mm; display: flex; flex-direction: column;">
             
-        let pageBreak = index < quoteArr.length - 1 ? 'page-break-after: always;' : '';
-
-        html += `
-        <div style="width: 210mm; min-height: 297mm; padding: 20mm; background: #fff; margin: 0 auto; box-sizing: border-box; font-family: '微軟正黑體', sans-serif; position: relative; color: #000; ${pageBreak}">
-            <div style="text-align: center; margin-bottom: 25px; border-bottom: 3px double #000; padding-bottom: 10px;">
-                <h1 style="font-size: 28px; font-weight: bold; margin: 0 0 5px 0; letter-spacing: 2px;">長固實業有限公司</h1>
-                <p style="font-size: 14px; margin: 0; line-height: 1.5;">241新北市三重區重新路五段609巷6號4樓之3</p>
-                <p style="font-size: 14px; margin: 0; line-height: 1.5;">電話：(04)2326-9591 &nbsp;&nbsp; 傳真：(04)2326-8576 &nbsp;&nbsp; 統編：86477073</p>
-                <div style="font-size: 24px; font-weight: bold; margin-top: 15px; letter-spacing: 15px;">估價單</div>
+            <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 15px; margin-bottom: 30px;">
+                <h2 style="margin: 0; font-weight: 900; letter-spacing: 5px; font-size: 32px;">長固實業有限公司</h2>
+                <h3 style="margin: 15px 0 0 0; font-weight: bold; letter-spacing: 15px; font-size: 24px;">估價單</h3>
             </div>
-            
-            <div style="display: flex; justify-content: space-between; font-size: 15px; margin-bottom: 15px;">
-                <div style="line-height: 1.8;">
-                    <div>客戶名稱：<span style="font-size: 18px; font-weight: bold;">${escapeQuotes(q.client)}</span></div>
-                    <div style="border-top: 1px solid #000; margin-top: 5px; padding-top: 5px;">申請單位：<span style="font-weight: bold;">${escapeQuotes(deptStr)}</span></div>
+
+            <div style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 16px; line-height: 1.8;">
+                <div style="width: 55%;">
+                    <div style="font-size: 20px; border-bottom: 1px solid #000; padding-bottom: 5px; margin-bottom: 15px;">
+                        <strong>客戶名稱：${escapeQuotes(clientName)}</strong>
+                    </div>
+                    <div><strong>估價單號：</strong>${escapeQuotes(quoteNos)}</div>
+                    <div><strong>估價日期：</strong>${dateStr}</div>
                 </div>
-                <div style="line-height: 1.8; text-align: right;">
-                    <div>估價單號：${q.quoteNo || '未編號'}</div>
-                    <div>報價日期：${q.quoteDate}</div>
-                    <div>業務人員：${q.staff}</div>
+                <div style="width: 40%; text-align: right; font-size: 15px;">
+                    <div><strong>統一編號：</strong>86477073</div>
+                    <div><strong>公司地址：</strong>台中市西區中美街639號</div>
+                    <div><strong>聯絡電話：</strong>(04) 2326-9591</div>
+                    <div><strong>傳真號碼：</strong>(04) 2326-8576</div>
                 </div>
             </div>
-            
-            <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 20px;">
+
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 16px; border: 2px solid #000;">
                 <thead>
-                    <tr style="border-top: 2px solid #000; border-bottom: 2px solid #000;">
-                        <th style="padding: 8px; text-align: left; width: 45%;">品名規格</th>
-                        <th style="padding: 8px; text-align: center; width: 10%;">數量</th>
-                        <th style="padding: 8px; text-align: center; width: 10%;">單位</th>
-                        <th style="padding: 8px; text-align: right; width: 12%;">單價</th>
-                        <th style="padding: 8px; text-align: right; width: 13%;">金額</th>
-                        <th style="padding: 8px; text-align: center; width: 10%;">備註</th>
+                    <tr style="background-color: #f1f3f5;">
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; width: 60px; text-align: center;">項次</th>
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; text-align: center;">品名及規格</th>
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; width: 70px; text-align: center;">數量</th>
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; width: 70px; text-align: center;">單位</th>
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; width: 120px; text-align: center;">單價(含稅)</th>
+                        <th style="border: 1px solid #000; border-bottom: 2px solid #000; padding: 12px; width: 130px; text-align: center;">總價(含稅)</th>
                     </tr>
                 </thead>
                 <tbody>
                     ${tbodyHtml}
                 </tbody>
                 <tfoot>
-                    <tr style="border-top: 2px solid #000;">
-                        <td colspan="4" style="text-align: right; padding: 5px 8px;">銷售合計：</td>
-                        <td style="text-align: right; padding: 5px 8px;">${Math.round(subtotalNet).toLocaleString()}</td>
-                        <td></td>
-                    </tr>
                     <tr>
-                        <td colspan="4" style="text-align: right; padding: 5px 8px;">營業稅 (5%)：</td>
-                        <td style="text-align: right; padding: 5px 8px;">${Math.round(tax).toLocaleString()}</td>
-                        <td></td>
-                    </tr>
-                    <tr style="font-weight: bold; font-size: 16px;">
-                        <td colspan="4" style="text-align: right; padding: 5px 8px;">總計金額：</td>
-                        <td style="text-align: right; padding: 5px 8px; border-bottom: 2px double #000;">NT$ ${Math.round(total).toLocaleString()}</td>
-                        <td></td>
+                        <td colspan="5" style="border: 1px solid #000; padding: 15px; text-align: right; font-weight: bold; letter-spacing: 2px;">總金額 (含稅)</td>
+                        <td style="border: 1px solid #000; padding: 15px; text-align: right; font-weight: bold; font-size: 18px; color: #000;">$${totalAmount.toLocaleString()}</td>
                     </tr>
                 </tfoot>
             </table>
-            
-            <div style="font-size: 13px; line-height: 1.6; margin-top: 30px;">
-                <div style="font-weight: bold; text-decoration: underline; margin-bottom: 5px;">注意事項：</div>
-                <div>1. 本報價單有效期限為自報價日起 30 天內有效。</div>
-                <div>2. 報價內容若需修改或規格變動，請重新申請報價。</div>
-                <div>3. 交貨期需視實際庫存與訂單確認時間而定。</div>
-                ${q.memo ? `<div style="color: #d9534f; margin-top: 5px;">備註：${escapeQuotes(q.memo)}</div>` : ''}
+
+            <div style="flex-grow: 1;"></div>
+
+            <div style="margin-top: 40px; font-size: 15px; border: 1px solid #000; padding: 20px; position: relative; min-height: 180px;">
+                <div style="font-weight: bold; margin-bottom: 10px; font-size: 16px;">備註事項：</div>
+                <div style="white-space: pre-wrap; line-height: 1.8;">${escapeQuotes(mainMemo) || '無'}</div>
+                ${sealHtml}
             </div>
-            
-            ${sealHtml}
-        </div>`;
-    });
-    
-    printArea.innerHTML = html;
-    showPrintPreview('printQuoteArea');
-}
+        </div>
+    `;
 
-// ============================================================================
-// 一鍵分享 PDF 功能 (利用 html2pdf.js 與 Web Share API)
-// ============================================================================
-window.sharePdf = function(elementId, filename) {
-    const btn = document.getElementById('btnSharePdf');
-    if(btn) { btn.innerHTML = "⏳ 產生中..."; btn.disabled = true; }
-    
-    const element = document.getElementById(elementId);
-    // 為了確保轉換時樣式不會跑掉，暫時移除 print-active 帶來的限制
-    element.classList.remove('print-active');
-    
-    const opt = {
-      margin:       0,
-      filename:     filename,
-      image:        { type: 'jpeg', quality: 0.98 },
-      html2canvas:  { scale: 2, useCORS: true },
-      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
-    };
-
-    html2pdf().set(opt).from(element).output('blob').then(function (blob) {
-        element.classList.add('print-active'); // 恢復預覽樣式
-        if(btn) { btn.innerHTML = "📤 分享檔案 (PDF)"; btn.disabled = false; }
-        
-        const file = new File([blob], filename, { type: 'application/pdf' });
-        
-        // 檢查瀏覽器是否支援 Web Share API (手機原生分享)
-        if (navigator.canShare && navigator.canShare({ files: [file] })) {
-            navigator.share({
-                files: [file],
-                title: '估價單',
-                text: '您好，附上長固實業估價單 PDF 檔案，請查收。'
-            }).catch((error) => console.log('分享取消或失敗', error));
-        } else {
-            // 如果不支援分享 (如某些電腦瀏覽器)，則直接下載檔案
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.style.display = 'none';
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            showToast("📥 瀏覽器不支援直接分享，已自動下載 PDF 檔案");
-        }
-    }).catch(err => {
-        console.error("PDF 產生失敗", err);
-        if(btn) { btn.innerHTML = "📤 分享檔案 (PDF)"; btn.disabled = false; }
-        alert("產生 PDF 失敗，請重試！");
-    });
+    const printQuoteArea = document.getElementById('printQuoteArea');
+    if (printQuoteArea) {
+        printQuoteArea.innerHTML = html;
+        if (typeof window.applyPrintStyle === 'function') window.applyPrintStyle('A4', 'portrait');
+        if (typeof window.showPrintPreview === 'function') window.showPrintPreview('printQuoteArea');
+    } else {
+        alert('系統錯誤：找不到估價單列印區塊');
+    }
 };
+
+
