@@ -10,8 +10,6 @@ const API_URL = "https://script.google.com/macros/s/AKfycbxWzxfHYdw9qvcPtGpU2qjx
 // 🟢 新版系統 API 端點 (Supabase)
 const SUPABASE_URL = "https://dojhiznffztiyofkfdiu.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvamhpem5mZnp0aXlvZmtmZGl1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzk3MzYsImV4cCI6MjEwNTMxNTczNn0.reT6i25kO1d1V8p2fDMHOOPVxaUJfp9SxOFeg-_xFqI";
-
-// 🔥 修正：使用 supabaseClient 作為變數名稱，避開全域變數衝突
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ============================================================================
@@ -65,13 +63,12 @@ async function callApi(action, payload = {}) {
 }
 
 // ============================================================================
-// 【全新】Supabase 雙軌寫入路由中心
+// 【全新修復版】Supabase 雙軌寫入路由中心
 // ============================================================================
 async function dualWriteToSupabase(action, payload) {
     try {
         console.log(`[雙軌寫入] 準備同步 ${action} 至 Supabase...`);
         
-        // 依據不同行為，將資料極速寫入對應的 Supabase 表格
         if (action === 'saveOrderData') {
             const items = payload.items || [];
             await supabaseClient.from('orders').upsert({
@@ -99,6 +96,17 @@ async function dualWriteToSupabase(action, payload) {
                 await supabaseClient.from('sales_details').insert(sdArr);
             }
         } 
+        else if (action === 'updateInvoiceRecord') {
+            // 【修復 1】發票編輯與作廢同步
+            if (payload.action === 'void') {
+                await supabaseClient.from('invoices').update({ status: '作廢' }).eq('row_idx', payload.rowIdx);
+            } else if (payload.action === 'edit') {
+                await supabaseClient.from('invoices').update({
+                    paper_no: payload.paperNo, order_no: payload.orderNo,
+                    net: payload.net, total: payload.total, details: payload.details
+                }).eq('row_idx', payload.rowIdx);
+            }
+        }
         else if (action === 'adjustInventory') {
             const { data: inv } = await supabaseClient.from('inventory').select('*').eq('name', payload.name).single();
             let currentNewQty = payload.changeQty;
@@ -132,13 +140,25 @@ async function dualWriteToSupabase(action, payload) {
             });
         } 
         else if (action === 'updateShipment') {
+            // 【修復 2】扣庫存並自動產生送貨單
+            let deliveryItems = [];
+            let targetClient = '';
+            let targetOrderNo = '';
+            let targetPaperNo = '';
+
             for (let u of payload.updates) {
                 const { data: sd } = await supabaseClient.from('sales_details').select('*').eq('row_idx', u.rowIdx).single();
                 if (sd) {
                     let newShipped = (sd.shipped_qty || 0) + u.shipQty;
                     let newStatus = newShipped >= sd.qty ? '已結案' : '部分出貨';
                     await supabaseClient.from('sales_details').update({ shipped_qty: newShipped, ship_status: newStatus }).eq('row_idx', u.rowIdx);
+                    targetClient = sd.client;
+                    targetOrderNo = sd.order_no;
+                    targetPaperNo = sd.paper_no;
                 }
+
+                deliveryItems.push({ name: u.name, qty: u.shipQty, lot: u.batchTarget || '' });
+
                 const { data: inv } = await supabaseClient.from('inventory').select('*').eq('name', u.name).single();
                 if (inv) {
                     let newQty = Number(inv.qty) - u.shipQty;
@@ -157,12 +177,89 @@ async function dualWriteToSupabase(action, payload) {
                     });
                 }
             }
-        } 
+
+            // 在 deliveries 表自動建立「待送貨」單據
+            if (deliveryItems.length > 0) {
+                await supabaseClient.from('deliveries').insert({
+                    row_idx: Date.now(), time: Date.now(), paper_no: targetPaperNo,
+                    client: targetClient, items_str: JSON.stringify(deliveryItems),
+                    status: '待送貨', staff: payload.staff, order_no: targetOrderNo
+                });
+            }
+        }
+        else if (action === 'batchExecuteDeliveries') {
+            // 【修復 3】批次送貨同步
+            for (let rIdx of payload.rowIndices) {
+                await supabaseClient.from('deliveries').update({
+                    status: '已送貨', delivery_date: payload.date,
+                    delivery_method: payload.method, memo: payload.memo
+                }).eq('row_idx', rIdx);
+            }
+        }
+        else if (action === 'updateDeliveryStatus') {
+            // 【修復 3】送貨單狀態更新/簽收同步
+            let updateData = { status: payload.action === 'sign' ? '已結案' : '待送貨' };
+            if (payload.action === 'sign') {
+                updateData.signature = payload.signatureData;
+                updateData.memo = (payload.currentMemo || '') + ' [已電子簽收]';
+            }
+            await supabaseClient.from('deliveries').update(updateData).eq('row_idx', payload.rowIdx);
+        }
+        else if (action === 'deleteDeliveryAndInvoice') {
+            // 【修復 5】作廢送貨單並連動註銷發票
+            await supabaseClient.from('deliveries').delete().eq('row_idx', payload.delRowIdx);
+            const { data: sdList } = await supabaseClient.from('sales_details').select('*').eq('paper_no', payload.paperNo);
+            if(sdList && sdList.length > 0) {
+                 await supabaseClient.from('invoices').update({ status: '作廢' }).eq('paper_no', payload.paperNo);
+                 // (扣庫存返還邏輯由 GAS 後台統一處理，前端雙軌僅處理主要狀態，以防庫存運算衝突)
+            }
+        }
+        else if (action === 'saveQuotation') {
+            // 【修復 4】估價單儲存並同步申請單位
+            await supabaseClient.from('quotations').upsert({
+                row_idx: payload.rowIdx || Date.now(), time: Date.now(), quote_no: payload.quoteNo,
+                quote_date: payload.quoteDate, client: payload.clientName, status: payload.status,
+                json_str: JSON.stringify(payload.items || []), use_seal: payload.useSeal,
+                staff: payload.staff, memo: payload.memo, merge_id: payload.mergeId || ''
+            });
+            // 同步更新客戶的申請單位 (receive_dept)
+            if (payload.department) {
+                const { data: c } = await supabaseClient.from('clients').select('receive_dept').eq('name', payload.clientName).single();
+                let currentDepts = (c && c.receive_dept) ? c.receive_dept : "";
+                if (!currentDepts.includes(payload.department)) {
+                    let newDepts = currentDepts ? currentDepts + "\n" + payload.department : payload.department;
+                    await supabaseClient.from('clients').update({ receive_dept: newDepts }).eq('name', payload.clientName);
+                }
+            }
+        }
+        else if (action === 'mergeQuotations') {
+            for (let qNo of payload.quoteNos) {
+                await supabaseClient.from('quotations').update({ merge_id: payload.mergeId }).eq('quote_no', qNo);
+            }
+        }
+        else if (action === 'unmergeQuotations') {
+            for (let qNo of payload.quoteNos) {
+                await supabaseClient.from('quotations').update({ merge_id: '' }).eq('quote_no', qNo);
+            }
+        }
+        else if (action === 'updateQuotationStatus') {
+            await supabaseClient.from('quotations').update({ status: payload.status }).eq('quote_no', payload.quoteNo);
+        }
+        else if (action === 'splitAndVoidQuotationItems') {
+            await supabaseClient.from('quotations').update({ json_str: JSON.stringify(payload.newItemsStr) }).eq('row_idx', payload.originalRowIdx);
+            await supabaseClient.from('quotations').insert({
+                row_idx: Date.now(), time: Date.now(), quote_no: payload.newQuoteNo,
+                quote_date: payload.originalDate, client: payload.clientName, status: '已作廢',
+                json_str: JSON.stringify(payload.voidItemsStr), use_seal: false, staff: payload.staff,
+                memo: '自原單拆分作廢'
+            });
+        }
         else if (action === 'addClientData') {
             await supabaseClient.from('clients').insert({
                 name: payload.clientName, tax_id: payload.taxId, address: payload.address, receive_dept: payload.receiveDept
             });
         }
+        
         console.log(`[雙軌寫入] ${action} 已極速發送至 Supabase`);
     } catch (e) {
         console.error(`[雙軌寫入錯誤] ${action}:`, e);
@@ -200,7 +297,6 @@ function triggerSync() {
         handleSyncRetry(task);
     }, 28000);
 
-    // 🔥 雙軌並行核心：同時呼叫 Supabase 與 GAS
     dualWriteToSupabase(task.action, task.payload);
 
     callApi(task.action, task.payload).then(res => {
@@ -307,6 +403,7 @@ function translateTaskDesc(t) {
         case 'saveOrderData': return `📦 建立/編輯訂單 | 醫院: ${p.clientName||'未知'} | 單號: ${p.orderNo||'無'}`;
         case 'submitInvoice': return `📝 開立發票 | 客戶: ${p.clientName||'未知'} | 總計: $${(p.totalWithTax||0).toLocaleString()}`;
         case 'updateShipment': return `🚚 出貨作業 | 扣庫存 (${p.updates?.[0]?.name||'多筆品項'})`;
+        case 'batchExecuteDeliveries': return `🚚 批次執行送貨作業`;
         case 'adjustInventory': return `🏭 庫存異動 | 品項: ${p.name||'未知'} | 動作: ${p.type||''} (${(p.changeQty||0)>0?'+':''}${p.changeQty||0})`;
         case 'submitPurchaseOrder': return `🛒 向廠商訂貨 | 品項: ${p.name||'未知'}`;
         case 'supplementInvoiceNo': return `📝 補登發票 | 新號碼: ${p.newPaperNo||'未知'}`;
@@ -316,14 +413,13 @@ function translateTaskDesc(t) {
         case 'editInvLogRecord': return `✏️ 編輯異動紀錄 | 單號: ${p.invoiceNo||p.orderNo||'未知'}`;
         case 'updateInvoiceRecord': return `🗑️ 發票狀態操作 | 動作: ${p.action==='void'?'作廢':'修改'}`;
         case 'updateOrderStatus': return `📝 訂單狀態更新 | 狀態變更`;
-        case 'saveQuotation': return `📑 建立/編輯估價單 | 客戶: ${p.clientName} | 單號: ${p.quoteNo}`;
+        case 'saveQuotation': return `📑 建立/編輯估價單 | 客戶: ${p.clientName}`;
         case 'mergeQuotations': return `🔗 合併估價單 | 群組 ID: ${p.mergeId}`;
         case 'unmergeQuotations': return `✂️ 解除合併估價單`;
         case 'updateQuotationStatus': return `🔄 更改估價單狀態 | 新狀態: ${p.status}`;
         case 'splitAndVoidQuotationItems': return `🗑️ 拆分作廢估價單品項 | 單號: ${p.quoteNo}`;
-        case 'updateDeliveryInfo': return `🚚 更新送貨資訊 | 狀態: ${p.status||''}`;
         case 'updateDeliveryStatus': return `📦 送貨狀態變更 | 動作: ${p.action === 'sign' ? '簽收結案' : '退回待送'}`;
-        case 'editInvLogBatch': return `🔄 修改出貨批號 | 品名: ${p.name||'未知'} -> 新批號: ${p.newLot||'不分批'}`;
+        case 'deleteDeliveryAndInvoice': return `🗑️ 作廢送貨單與發票 | 單號: ${p.paperNo}`;
         default: return `⚙️ 系統操作 (${t.action})`;
     }
 }
@@ -390,7 +486,7 @@ async function loadDataFromSupabase() {
         supabaseClient.from('email_settings').select('*')
     ]);
 
-    // 將 Supabase 的蛇形命名 (snake_case) 自動轉換回系統適用的駝峰命名 (camelCase)
+    // 將 Supabase 的蛇形命名自動轉換回系統適用的駝峰命名
     globalClients = (c || []).map(x => ({name: x.name, taxId: x.tax_id, address: x.address, receiveDept: x.receive_dept}));
     globalSuppliers = (s || []).map(x => ({name: x.name, code: x.code, phone: x.phone, fax: x.fax}));
     globalCatalog = (cat || []).map(x => ({rowIndex: x.row_index, assetCode: x.asset_code, internalCode: x.internal_code, clientName: x.client_name, productName: x.product_name, unit: x.unit, price: Number(x.price)}));
@@ -409,7 +505,7 @@ async function loadDataFromSupabase() {
 }
 
 // ============================================================================
-// UI 全域刷新控制器 (避免重複撰寫)
+// UI 全域刷新控制器
 // ============================================================================
 function refreshAllUI() {
     if (typeof window.populateAdminClientFilter === "function") window.populateAdminClientFilter();
@@ -456,7 +552,7 @@ function setupSupabaseRealtime() {
         .on('postgres_changes', { event: '*', schema: 'public' }, payload => {
             console.log('🔄 Supabase 偵測到資料庫變更:', payload);
             if (!isSyncing && bgSyncQueue.length === 0) {
-                silentRefreshData(); // 收到推播後自動更新畫面，不需重新整理
+                silentRefreshData(); 
             }
         })
         .subscribe((status) => {
@@ -640,7 +736,6 @@ window.onload = function() {
                 let count = typeof res === 'object' ? res.count : res;
                 if(document.getElementById('mqOnline')) document.getElementById('mqOnline').innerText = `👥 ${count} 人`; 
                 if(document.getElementById('navOnlineCount')) document.getElementById('navOnlineCount').innerText = `👥 ${count}`; 
-                // 資料更新已被 Supabase Realtime 接管，此處僅保留人數統計
             }).catch(e => console.log('心跳同步失敗', e)); 
         } 
     }, 15000); 
@@ -668,7 +763,6 @@ window.initSystemData = function() {
     document.getElementById('splashScreen').style.display = 'flex'; let fakeProgress = 10; setProgress(fakeProgress, '🚀 從 Supabase 極速載入中...');
     const intv = setInterval(() => { fakeProgress += (85 - fakeProgress) * 0.2; setProgress(fakeProgress); }, 100);
     
-    // 【升級】直接從 Supabase 一次拉取全系統資料
     loadDataFromSupabase().then(() => {
         clearInterval(intv); setProgress(100, '✅ 載入完成！');
         
