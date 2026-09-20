@@ -59,6 +59,7 @@
       <div class="home-card c-inv" onclick="enterSystem('invoice')"><div class="fs-1 mb-2">📝</div><h6 class="fw-bold text-primary mb-1">開立發票作業</h6></div>
       <div class="home-card c-quo" onclick="enterSystem('quotation')" style="border-bottom-color: #6f42c1; grid-column: span 2;"><div class="fs-1 mb-2">📑</div><h5 class="fw-bold mb-1" style="color: #6f42c1;">開立估價單</h5></div>
       <div class="home-card c-stk" onclick="enterSystem('inventory')"><div class="fs-1 mb-2">🏭</div><h5 class="fw-bold text-info mb-1">產品庫存管理</h5></div>
+      <!-- 全新送貨追蹤模組入口 -->
       <div class="home-card c-del" onclick="enterSystem('delivery')" style="border-bottom-color: #fd7e14; grid-column: span 2;"><div class="fs-1 mb-2">🚚</div><h5 class="fw-bold mb-1" style="color: #fd7e14;">送貨與電子簽收</h5></div>
       <div class="home-card c-rep" onclick="enterSystem('history')"><div class="fs-1 mb-2">📊</div><h5 class="fw-bold text-success mb-1">發票紀錄與報表</h5></div>
       <div class="home-card c-mgr" onclick="enterSystem('admin')"><div class="fs-1 mb-2">⚙️</div><h5 class="fw-bold text-danger mb-1">管理員後台</h5></div>
@@ -237,11 +238,9 @@
               <input type="search" class="form-control mb-3" id="stkLogSearch" placeholder="🔍 關鍵字模糊搜尋 (操作人員、備註等)..." oninput="renderInvLogs()"><div id="stkLogContainer"></div>
             </div>
             
+            <!-- 【升級】欠貨出貨/訂貨模組增加雙層過濾器 -->
             <div class="tab-pane fade" id="tabStkShip">
               <div class="alert alert-info small py-2 mb-3">列出所有「開立發票」後，但尚未完成實際出貨的品項明細 (支援分批出貨與叫貨)。</div>
-              <!-- 【新增】預先訂貨按鈕 -->
-              <button class="btn btn-warning text-dark w-100 fw-bold py-2 mb-3 shadow-sm" onclick="openPreOrderModal()">🛒 預先訂貨 (獨立建立訂購單)</button>
-              
               <div class="p-2 bg-light border rounded mb-3">
                 <input type="search" class="form-control mb-2 fw-bold" id="stkShipSearch" placeholder="🔍 模糊搜尋：單號、品名、客戶..." oninput="renderShipments()">
                 <div class="row g-2">
@@ -293,11 +292,7 @@
             </div>
             <div class="d-flex justify-content-between align-items-center mt-3 border-top pt-2">
               <span class="small text-muted fw-bold">批次操作 (勾選待送貨)：</span>
-              <div>
-                <!-- 【新增】作廢註銷按鈕 -->
-                <button class="btn btn-sm btn-outline-danger fw-bold me-2" onclick="groupVoidDeliveryAndInvoice()">🗑️ 作廢註銷</button>
-                <button class="btn btn-sm btn-primary fw-bold" onclick="groupExecuteDelivery()">🚚 批次執行送貨</button>
-              </div>
+              <button class="btn btn-sm btn-primary fw-bold" onclick="groupExecuteDelivery()">🚚 批次執行送貨</button>
             </div>
           </div>
           
@@ -388,12 +383,10 @@
             <div class="small text-muted">新北市三重區重新路五段609巷6號4樓 | 電話：(04)23269591 | 傳真：(04)23268576</div>
             <div class="fw-bold mt-2" style="font-size: 1.2rem; letter-spacing: 5px;">估價單</div>
           </div>
-          <!-- 【新增】申請單位欄位 -->
           <div class="row g-2 mb-3">
-            <div class="col-md-3"><label class="small fw-bold text-muted">估價日期</label><input type="date" class="form-control fw-bold text-primary" id="e_quoDate"></div>
-            <div class="col-md-3"><label class="small fw-bold text-muted">估價單編號</label><input type="text" class="form-control fw-bold" id="e_quoNo" placeholder="手動輸入編號"></div>
-            <div class="col-md-3"><label class="small fw-bold text-muted">客戶名稱 <span class="text-danger">*</span></label><input type="text" class="form-control fake-input-btn fw-bold text-dark" id="e_quoClient" readonly placeholder="點此選擇客戶..." onclick="openSearchModal('client_quo', selectClientForQuotation)"></div>
-            <div class="col-md-3"><label class="small fw-bold text-muted">申請單位 (自動帶入/修改)</label><input type="text" class="form-control fw-bold text-dark" id="e_quoDept" placeholder="選填..."></div>
+            <div class="col-md-4"><label class="small fw-bold text-muted">估價日期</label><input type="date" class="form-control fw-bold text-primary" id="e_quoDate"></div>
+            <div class="col-md-4"><label class="small fw-bold text-muted">估價單編號</label><input type="text" class="form-control fw-bold" id="e_quoNo" placeholder="手動輸入編號"></div>
+            <div class="col-md-4"><label class="small fw-bold text-muted">客戶名稱 <span class="text-danger">*</span></label><input type="text" class="form-control fake-input-btn fw-bold text-dark" id="e_quoClient" readonly placeholder="點此選擇客戶..." onclick="openSearchModal('client_quo', selectClientForQuotation)"></div>
           </div>
           
           <h6 class="fw-bold mt-4 border-bottom pb-2" style="color: #6f42c1;">估價品項明細 <span class="text-muted small ms-2 fw-normal">(系統自動含稅計算)</span></h6>
@@ -519,13 +512,13 @@
   <div id="printArea" style="display:none;"></div>
   <div id="printPoArea" style="display:none;"></div>
   <div id="printQuoteArea" style="display:none;"></div>
+  <!-- 【全新】送貨單列印區塊 -->
   <div id="printDeliveryArea" style="display:none;"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   
-  <!-- 【升級】引入 Supabase 官方 JavaScript SDK 與 html2pdf -->
+  <!-- 【升級】引入 Supabase 官方 JavaScript SDK -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
   
   <script src="api_core.js"></script>
   <script src="module_order.js"></script>
@@ -536,3 +529,4 @@
 
 </body>
 </html>
+
