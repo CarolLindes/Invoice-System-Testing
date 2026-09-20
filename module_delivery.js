@@ -1,439 +1,319 @@
 /**
  * ============================================================================
- * 模組 6：送貨追蹤與電子簽收模組 (module_delivery.js)
- * 全新獨立模組：負責物流狀態追蹤、A5 送貨單列印與 Canvas 電子簽收
+ * 模組 6：送貨與電子簽收模組 (module_delivery.js) - 【已連動修復版】
  * ============================================================================
  */
 
-let currentDeliverySignRowIdx = null;
+let deliverySearchText = "";
+let groupDeliverySelection = new Set();
+let signaturePadInstance = null;
 
 // ============================================================================
-// 1. 列表渲染與狀態過濾
+// 列表渲染
 // ============================================================================
 window.renderDeliveryList = debounce(function() {
-    const term = (document.getElementById('delSearchInput').value || '').toLowerCase();
-    const filterMethod = document.getElementById('delFilterMethod').value;
-    const filterStatus = document.getElementById('delFilterStatus').value;
-
-    let arr = globalDeliveries || [];
-
-    // 關鍵字篩選
-    if (term) {
-        arr = arr.filter(d => 
-            (d.client || '').toLowerCase().includes(term) ||
-            (d.paperNo || '').toLowerCase().includes(term) ||
-            (d.orderNo || '').toLowerCase().includes(term) ||
-            (d.itemsStr || '').toLowerCase().includes(term) ||
-            (d.memo || '').toLowerCase().includes(term)
-        );
-    }
-
-    // 送貨方式篩選
-    if (filterMethod) arr = arr.filter(d => d.deliveryMethod === filterMethod);
-    // 狀態篩選
-    if (filterStatus) arr = arr.filter(d => d.status === filterStatus);
-
-    let pending = arr.filter(d => d.status === '待送貨');
-    let completed = arr.filter(d => d.status === '已送貨' || d.status === '已結案');
-
-    document.getElementById('delPendingListContainer').innerHTML = buildDeliveryHtml(pending, true);
-    document.getElementById('delCompletedListContainer').innerHTML = buildDeliveryHtml(completed, false);
+    deliverySearchText = document.getElementById('delSearchInput').value.trim().toLowerCase();
+    const pendC = document.getElementById('delPendingListContainer');
+    const compC = document.getElementById('delCompletedListContainer');
+    
+    const fMethod = document.getElementById('delFilterMethod').value;
+    const fStatus = document.getElementById('delFilterStatus').value;
+    
+    let pendHTML = ""; let compHTML = "";
+    
+    globalDeliveries.forEach(d => {
+        let match = true;
+        
+        if (fMethod && d.deliveryMethod !== fMethod) match = false;
+        if (fStatus && d.status !== fStatus) match = false;
+        
+        let itemsText = "";
+        try {
+            let items = JSON.parse(d.itemsStr || '[]');
+            itemsText = items.map(i => i.name).join(" ");
+        } catch(e){}
+        
+        if (deliverySearchText && match) {
+            const str = `${d.client} ${d.paperNo} ${d.orderNo} ${itemsText} ${d.memo}`.toLowerCase();
+            if (!str.includes(deliverySearchText)) match = false;
+        }
+        
+        if (match) {
+            let card = buildDeliveryCard(d);
+            if (d.status === '待送貨') pendHTML += card;
+            else compHTML += card;
+        }
+    });
+    
+    pendC.innerHTML = pendHTML || '<div class="text-center text-muted py-4">無待送貨紀錄</div>';
+    compC.innerHTML = compHTML || '<div class="text-center text-muted py-4">無已送貨/已結案紀錄</div>';
 }, 300);
 
-function buildDeliveryHtml(dataArr, isPending) {
-    if (dataArr.length === 0) return '<div class="text-center text-muted py-4">目前沒有相關資料</div>';
+function buildDeliveryCard(d) {
+    let badgeClass = "bg-warning text-dark";
+    if (d.status === '已送貨') badgeClass = "bg-primary";
+    else if (d.status === '已結案') badgeClass = "bg-success";
+    
+    let items = [];
+    try { items = JSON.parse(d.itemsStr || '[]'); } catch(e){}
+    
+    const isPending = d.status === '待送貨';
+    const checked = groupDeliverySelection.has(d.rowIdx) ? 'checked' : '';
+    const checkboxHtml = isPending ? `<input class="form-check-input me-2 mt-1 cb-del-merge" type="checkbox" value="${d.rowIdx}" ${checked} onchange="toggleDeliverySelect(${d.rowIdx}, this.checked)" style="transform: scale(1.3);">` : '';
+    
+    let actionButtons = "";
+    if (isPending) {
+        actionButtons = `<button class="btn btn-sm btn-outline-primary fw-bold" onclick="printDeliveryNote(${d.rowIdx})">🖨️ 印送貨單</button>`;
+    } else if (d.status === '已送貨') {
+        actionButtons = `
+            <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="printDeliveryNote(${d.rowIdx})">🖨️</button>
+            <button class="btn btn-sm btn-outline-warning fw-bold ms-1" onclick="returnToPending(${d.rowIdx})">🔙 退回</button>
+            <button class="btn btn-sm btn-success fw-bold ms-1" onclick="openSignatureModal(${d.rowIdx})">✍️ 結案簽收</button>
+        `;
+    } else { // 已結案
+        actionButtons = `
+            <span class="text-success small fw-bold me-2">✅ 已完成簽收</span>
+            <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="printDeliveryNote(${d.rowIdx})">📄 檢視單據</button>
+        `;
+    }
 
-    return dataArr.map(d => {
-        let items = []; try { items = JSON.parse(d.itemsStr); } catch(e){}
-        let itemsHtml = items.map(i => {
-            let lotBadge = i.batchTarget ? `<span class="badge bg-info text-dark ms-1">批號: ${i.batchTarget}</span>` : '';
-            let expBadge = i.exp ? `<span class="badge bg-secondary ms-1">效期: ${i.exp}</span>` : '';
-            return `<div class="mt-1 text-secondary">▪ ${i.name} <span class="badge bg-light border text-dark ms-1">x${i.qty}</span> ${lotBadge} ${expBadge}</div>`;
-        }).join('');
-
-        let badgeStatus = '';
-        if (d.status === '已送貨') badgeStatus = `<span class="badge bg-success ms-2">🟢 已送貨</span>`;
-        else if (d.status === '已結案') badgeStatus = `<span class="badge bg-secondary ms-2">✅ 已簽收結案</span>`;
-
-        let methodBadge = d.deliveryMethod ? `<span class="badge bg-warning text-dark ms-2">🚚 ${d.deliveryMethod}</span>` : '';
-
-        let actionBtns = '';
-        let checkboxHtml = '';
-
-        if (isPending) {
-            checkboxHtml = `<input class="form-check-input me-3 cb-del" type="checkbox" value="${d.rowIdx}" style="transform: scale(1.3); flex-shrink: 0;">`;
-            actionBtns = `<button class="btn btn-sm btn-primary fw-bold" onclick="openDeliveryActionModal([${d.rowIdx}])">執行送貨</button>`;
-        } else {
-            if (d.status === '已送貨') {
-                actionBtns += `<button class="btn btn-sm btn-outline-danger fw-bold me-1" onclick="returnDelivery(${d.rowIdx})">退回</button>`;
-                actionBtns += `<button class="btn btn-sm btn-outline-secondary fw-bold me-1" onclick="openDeliveryActionModal([${d.rowIdx}])">編輯</button>`;
-                actionBtns += `<button class="btn btn-sm btn-outline-info text-dark fw-bold me-1" onclick="printDeliverySlip(${d.rowIdx})">🖨️ 印送貨單</button>`;
-                actionBtns += `<button class="btn btn-sm btn-success fw-bold shadow-sm" onclick="openSignModal(${d.rowIdx})">✍️ 結案簽收</button>`;
-            } else if (d.status === '已結案') {
-                actionBtns += `<button class="btn btn-sm btn-outline-info text-dark fw-bold me-1" onclick="printDeliverySlip(${d.rowIdx})">🖨️ 補印已簽收單據</button>`;
-                actionBtns += `<span class="text-success fw-bold small"><br>已由客戶確認簽收</span>`;
-            }
-        }
-
-        let dateMemoInfo = '';
-        if (d.deliveryDate) dateMemoInfo += `<span class="text-primary fw-bold me-2">日期: ${d.deliveryDate}</span>`;
-        if (d.memo) dateMemoInfo += `<span class="text-muted">備註: ${d.memo}</span>`;
-
-        return `<div class="item-row bg-white shadow-sm p-3 mb-2 border-start border-4 ${d.status === '已結案' ? 'border-secondary opacity-75' : 'border-primary'}">
-            <div class="d-flex justify-content-between align-items-start mb-2 border-bottom pb-2">
-                <div class="d-flex align-items-center">
+    return `
+    <div class="card mb-2 border-0 shadow-sm">
+        <div class="card-body p-3">
+            <div class="d-flex justify-content-between mb-2">
+                <div class="d-flex align-items-start">
                     ${checkboxHtml}
                     <div>
-                        <div class="fw-bold text-dark fs-6">${d.client} ${badgeStatus} ${methodBadge}</div>
-                        <div class="small text-muted mt-1">訂單號碼: <span class="fw-bold text-dark">${d.orderNo || '無'}</span> | 發票編號: <span class="fw-bold text-primary">${d.paperNo || '無'}</span></div>
+                        <div class="fw-bold fs-6 text-dark">${escapeQuotes(d.client)}</div>
+                        <div class="small text-muted">發票: ${d.paperNo || '無'} | 訂單: ${d.orderNo || '無'}</div>
                     </div>
                 </div>
-                <div class="text-end d-flex flex-wrap justify-content-end gap-1" style="max-width: 250px;">
-                    ${actionBtns}
+                <div class="text-end">
+                    <span class="badge ${badgeClass} mb-1">${d.status}</span>
                 </div>
             </div>
-            <div class="small mt-2">${itemsHtml}</div>
-            <div class="small mt-2 pt-2 border-top">${dateMemoInfo}</div>
-        </div>`;
-    }).join('');
+            
+            <div class="small text-secondary mb-2 ms-${isPending ? '4' : '0'} bg-light p-2 rounded">
+                ${items.map(i => `• ${escapeQuotes(i.name)} <strong>x ${i.qty}</strong>${i.lot ? `(批:${i.lot})` : ''}`).join('<br>')}
+            </div>
+            
+            ${d.deliveryDate ? `<div class="small text-primary fw-bold ms-${isPending ? '4' : '0'} mb-2">🚚 ${d.deliveryMethod} (${d.deliveryDate})${d.memo ? `- ${escapeQuotes(d.memo)}` : ''}</div>` : ''}
+            
+            <div class="d-flex justify-content-end align-items-center mt-2 pt-2 border-top">
+                <div class="btn-group">${actionButtons}</div>
+            </div>
+        </div>
+    </div>`;
 }
 
 // ============================================================================
-// 2. 執行送貨與編輯資訊 (Delivery Action)
+// 批次操作與狀態變更
 // ============================================================================
-window.groupExecuteDelivery = function() {
-    const cbs = document.querySelectorAll('.cb-del:checked');
-    if(cbs.length === 0) return alert('請先勾選要送貨的項目！');
-    let ids = Array.from(cbs).map(cb => parseInt(cb.value));
-    openDeliveryActionModal(ids);
+window.toggleDeliverySelect = function(rowIdx, isChecked) {
+    if (isChecked) groupDeliverySelection.add(rowIdx);
+    else groupDeliverySelection.delete(rowIdx);
 };
 
-window.openDeliveryActionModal = function(rowIndices) {
-    document.getElementById('da_rowIndices').value = JSON.stringify(rowIndices);
+window.groupExecuteDelivery = function() {
+    if (groupDeliverySelection.size === 0) return alert("請勾選至少一筆待送貨的資料！");
+    document.getElementById('da_rowIndices').value = JSON.stringify(Array.from(groupDeliverySelection));
     document.getElementById('da_date').value = getTodayStr();
-    
-    // 動態新增兩個送貨方式選項（若尚未存在）
-    const methodSelect = document.getElementById('da_method');
-    if (!methodSelect.querySelector('option[value="工廠直送"]')) {
-        methodSelect.insertAdjacentHTML('beforeend', '<option value="工廠直送">工廠直送</option><option value="親自取貨">親自取貨</option>');
-    }
-    
-    document.getElementById('da_method').value = '';
-    document.getElementById('da_memo').value = '';
-
-    // 若為單筆編輯，載入既有資料
-    if (rowIndices.length === 1) {
-        const d = globalDeliveries.find(x => x.rowIdx === rowIndices[0]);
-        if (d) {
-            if (d.deliveryDate) document.getElementById('da_date').value = d.deliveryDate;
-            if (d.deliveryMethod) document.getElementById('da_method').value = d.deliveryMethod;
-            if (d.memo) document.getElementById('da_memo').value = d.memo;
-        }
-    }
-    
+    document.getElementById('da_method').value = "";
+    document.getElementById('da_memo').value = "";
     bootstrap.Modal.getOrCreateInstance(document.getElementById('deliveryActionModal')).show();
 };
 
 window.confirmDeliveryAction = function() {
-    const ids = JSON.parse(document.getElementById('da_rowIndices').value);
-    const date = document.getElementById('da_date').value;
-    const method = document.getElementById('da_method').value;
-    const memo = document.getElementById('da_memo').value.trim();
-
-    if (!date || !method) return alert("送貨日期與送貨方式為必填！");
-
-    // 【智慧合併邏輯】：前端先行合併預覽，後端同步處理
-    let clientGroups = {};
-    ids.forEach(idx => {
-        let d = globalDeliveries.find(x => x.rowIdx === idx);
-        if(d) {
-            if(!clientGroups[d.client]) clientGroups[d.client] = [];
-            clientGroups[d.client].push(d);
-        }
-    });
-
-    for (let client in clientGroups) {
-        let group = clientGroups[client];
-        if (group.length === 1) {
-            let d = group[0];
-            d.status = '已送貨'; d.deliveryDate = date; d.deliveryMethod = method; d.memo = memo;
-        } else {
-            // 合併多筆品項為一張單據
-            let mainD = group[0];
-            let mergedItems = [];
-            let pNos = new Set(mainD.paperNo.split(',').map(s=>s.trim()).filter(x=>x));
-            let oNos = new Set((mainD.orderNo||'').split(',').map(s=>s.trim()).filter(x=>x));
-            let lots = new Set((mainD.lot||'').split(',').map(s=>s.trim()).filter(x=>x));
-            let exps = new Set((mainD.expiry||'').split(',').map(s=>s.trim()).filter(x=>x));
-
-            group.forEach((d, index) => {
-                let items = []; try { items = JSON.parse(d.itemsStr); } catch(e){}
-                if(index > 0) {
-                    d.paperNo.split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>pNos.add(x));
-                    (d.orderNo||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>oNos.add(x));
-                    (d.lot||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>lots.add(x));
-                    (d.expiry||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>exps.add(x));
-                    // 移除被合併的子項目
-                    globalDeliveries = globalDeliveries.filter(x => x.rowIdx !== d.rowIdx); 
-                }
-                mergedItems.push(...items);
-            });
-            mainD.paperNo = Array.from(pNos).join(', ');
-            mainD.orderNo = Array.from(oNos).join(', ');
-            mainD.lot = Array.from(lots).join(', ');
-            mainD.expiry = Array.from(exps).join(', ');
-            mainD.itemsStr = JSON.stringify(mergedItems);
-            mainD.status = '已送貨';
-            mainD.deliveryDate = date;
-            mainD.deliveryMethod = method;
-            mainD.memo = memo;
-        }
-    }
-
-    pushToSyncQueue('batchExecuteDeliveries', {
-        rowIndices: ids, deliveryDate: date, deliveryMethod: method, memo: memo
-    }, null);
-
-    window.renderDeliveryList();
-    bootstrap.Modal.getInstance(document.getElementById('deliveryActionModal')).hide();
-    showToast("🚚 批次送貨處理完成！(同客戶之單據已自動智慧合併)");
-};
-
-// ============================================================================
-// 3. 狀態退回與電子簽收 (Signature Pad)
-// ============================================================================
-window.returnDelivery = function(idx) {
-    if(!confirm("確定要將此筆資料退回「待送貨」狀態嗎？")) return;
-    const d = globalDeliveries.find(x => x.rowIdx === idx);
-    if(d) d.status = '待送貨';
-    pushToSyncQueue('updateDeliveryStatus', { action: 'return', rowIdx: idx }, null);
-    window.renderDeliveryList();
-    showToast("⏪ 已退回待送貨");
-};
-
-let signatureCanvas, signatureCtx;
-let isDrawing = false;
-
-window.openSignModal = function(idx) {
-    currentDeliverySignRowIdx = idx;
+    const rowIndices = JSON.parse(document.getElementById('da_rowIndices').value || '[]');
+    const dDate = document.getElementById('da_date').value;
+    const dMethod = document.getElementById('da_method').value;
+    const dMemo = document.getElementById('da_memo').value.trim();
     
-    // 生成上方迷你 A5 預覽圖
-    const previewContainer = document.getElementById('ds_previewContainer');
-    previewContainer.innerHTML = buildDeliveryPrintHtml(idx, true); // true 代表產生迷你預覽版
+    if(!dDate || !dMethod) return alert("請填寫送貨日期與送貨方式！");
+    
+    pushToSyncQueue('batchExecuteDeliveries', {
+        rowIndices: rowIndices, date: dDate, method: dMethod, memo: dMemo, staff: myName
+    });
+    
+    groupDeliverySelection.clear();
+    bootstrap.Modal.getInstance(document.getElementById('deliveryActionModal')).hide();
+    renderDeliveryList();
+    showToast(`🚚 ${rowIndices.length} 筆已移至已送貨區`);
+};
 
+// ============================================================================
+// 解決問題 5：全新作廢註銷邏輯 (連動註銷發票)
+// ============================================================================
+window.groupVoidDeliveryAndInvoice = function() {
+    if (groupDeliverySelection.size === 0) return alert("請先勾選要作廢註銷的送貨單！");
+    if (!confirm(`⚠️ 嚴重警告 ⚠️\n您確定要作廢這 ${groupDeliverySelection.size} 筆送貨單嗎？\n\n系統將會「同步作廢」它所屬的發票。\n(注意：作廢後庫存不會自動退回，請至庫存異動手動退庫)`)) return;
+    
+    const rowIndices = Array.from(groupDeliverySelection);
+    pushToSyncQueue('voidDeliveryAndInvoice', { rowIndices: rowIndices });
+    
+    groupDeliverySelection.clear();
+    renderDeliveryList();
+    showToast(`🗑️ 送貨單與關聯發票作廢指令已送出`);
+};
+
+window.returnToPending = function(rowIdx) {
+    if(!confirm("確定要將這筆取消送貨，退回「待送貨」狀態嗎？")) return;
+    pushToSyncQueue('updateDeliveryStatus', { action: 'return', rowIdx: rowIdx });
+    renderDeliveryList();
+    showToast("🔙 已退回待送貨");
+};
+
+// ============================================================================
+// 送貨單列印
+// ============================================================================
+window.printDeliveryNote = function(rowIdx) {
+    const d = globalDeliveries.find(x => x.rowIdx === rowIdx);
+    if (!d) return;
+    
+    const printArea = document.getElementById('printDeliveryArea');
+    if(!printArea) return;
+    applyPrintStyle('A5', 'landscape');
+    
+    let items = [];
+    try { items = JSON.parse(d.itemsStr || '[]'); } catch(e){}
+    
+    let tbodyHtml = items.map((item, idx) => `
+        <tr>
+            <td style="padding: 8px; text-align: center;">${idx+1}</td>
+            <td style="padding: 8px; text-align: left;">${escapeQuotes(item.name)}</td>
+            <td style="padding: 8px; text-align: center;">${item.qty}</td>
+            <td style="padding: 8px; text-align: center;">${escapeQuotes(item.lot || '')}</td>
+            <td style="padding: 8px; border-right: none;"></td>
+        </tr>
+    `).join('');
+    
+    let signImageHtml = d.signature ? `<img src="${d.signature}" style="max-width: 200px; max-height: 80px;">` : `<div style="height: 60px;"></div>`;
+    
+    let html = `
+    <div style="width: 210mm; min-height: 148mm; padding: 10mm; background: #fff; margin: 0 auto; box-sizing: border-box; font-family: '微軟正黑體', sans-serif; color: #000; position: relative;">
+        <h2 style="text-align: center; font-weight: bold; letter-spacing: 10px; margin-bottom: 20px;">出貨/送貨單</h2>
+        
+        <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 15px;">
+            <div style="line-height: 1.8;">
+                <div>客戶名稱：<span style="font-size: 16px; font-weight: bold;">${escapeQuotes(d.client)}</span></div>
+                <div>聯絡電話：_____________________</div>
+                <div>送貨地址：___________________________________________</div>
+            </div>
+            <div style="line-height: 1.8; text-align: right;">
+                <div>送貨單號：${d.paperNo || '無'}</div>
+                <div>訂單編號：${d.orderNo || '無'}</div>
+                <div>列印日期：${getTodayStr()}</div>
+            </div>
+        </div>
+        
+        <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 20px; border: 2px solid #000;">
+            <thead>
+                <tr style="border-bottom: 2px solid #000;">
+                    <th style="padding: 8px; text-align: center; width: 8%; border-right: 1px solid #000;">項次</th>
+                    <th style="padding: 8px; text-align: left; width: 45%; border-right: 1px solid #000;">品名規格</th>
+                    <th style="padding: 8px; text-align: center; width: 12%; border-right: 1px solid #000;">數量</th>
+                    <th style="padding: 8px; text-align: center; width: 15%; border-right: 1px solid #000;">批號</th>
+                    <th style="padding: 8px; text-align: center; width: 20%;">備註</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${tbodyHtml}
+            </tbody>
+        </table>
+        
+        <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 30px;">
+            <div style="font-size: 13px;">
+                <div>🚚 配送方式：${d.deliveryMethod || '未指定'}</div>
+                <div>📅 配送日期：${d.deliveryDate || '未指定'}</div>
+            </div>
+            <div style="text-align: center; width: 250px;">
+                <div style="border-bottom: 1px solid #000; margin-bottom: 5px;">
+                    ${signImageHtml}
+                </div>
+                <div style="font-weight: bold; font-size: 14px;">客戶簽收處 (Sign Here)</div>
+            </div>
+        </div>
+    </div>`;
+    
+    printArea.innerHTML = html;
+    showPrintPreview('printDeliveryArea');
+};
+
+// ============================================================================
+// 電子簽收 (Canvas)
+// ============================================================================
+window.openSignatureModal = function(rowIdx) {
+    document.getElementById('ds_rowIdx').value = rowIdx;
+    
+    const d = globalDeliveries.find(x => x.rowIdx === rowIdx);
+    if(d) {
+        let items = [];
+        try { items = JSON.parse(d.itemsStr || '[]'); } catch(e){}
+        let miniHtml = `<div class="fw-bold mb-2 text-primary">客戶：${escapeQuotes(d.client)}</div>`;
+        miniHtml += items.map(i => `<div class="small">• ${escapeQuotes(i.name)} x ${i.qty}</div>`).join('');
+        document.getElementById('ds_previewContainer').innerHTML = miniHtml;
+    }
+    
     bootstrap.Modal.getOrCreateInstance(document.getElementById('deliverySignModal')).show();
     
-    // 延遲初始化 Canvas，確保 Modal 展開後能抓到正確寬高
     setTimeout(() => {
-        initSignaturePad();
+        const canvas = document.getElementById('signaturePad');
+        const ratio = Math.max(window.devicePixelRatio || 1, 1);
+        canvas.width = canvas.offsetWidth * ratio;
+        canvas.height = canvas.offsetHeight * ratio;
+        canvas.getContext("2d").scale(ratio, ratio);
+        
+        if (!signaturePadInstance) {
+            initSignaturePad(canvas);
+        } else {
+            signaturePadInstance.clear();
+        }
     }, 300);
 };
 
-function initSignaturePad() {
-    signatureCanvas = document.getElementById('signaturePad');
-    signatureCtx = signatureCanvas.getContext('2d');
-    
-    // 解決高解析度模糊問題
-    const rect = signatureCanvas.parentElement.getBoundingClientRect();
-    signatureCanvas.width = rect.width;
-    signatureCanvas.height = 250;
-    
-    signatureCtx.lineWidth = 3;
-    signatureCtx.lineCap = 'round';
-    signatureCtx.strokeStyle = '#000000';
-    
-    clearSignature();
+let isDrawing = false;
+let ctx = null;
 
-    signatureCanvas.onmousedown = startDrawing;
-    signatureCanvas.onmousemove = draw;
-    signatureCanvas.onmouseup = stopDrawing;
-    signatureCanvas.onmouseout = stopDrawing;
+function initSignaturePad(canvas) {
+    ctx = canvas.getContext('2d');
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#000000';
 
-    // 支援手機觸控
-    signatureCanvas.ontouchstart = (e) => { e.preventDefault(); startDrawing(e.touches[0]); };
-    signatureCanvas.ontouchmove = (e) => { e.preventDefault(); draw(e.touches[0]); };
-    signatureCanvas.ontouchend = (e) => { e.preventDefault(); stopDrawing(); };
-}
+    const getPos = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return { x: clientX - rect.left, y: clientY - rect.top };
+    };
 
-function startDrawing(e) {
-    isDrawing = true;
-    signatureCtx.beginPath();
-    const rect = signatureCanvas.getBoundingClientRect();
-    signatureCtx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
-}
+    const start = (e) => { e.preventDefault(); isDrawing = true; const pos = getPos(e); ctx.beginPath(); ctx.moveTo(pos.x, pos.y); };
+    const move = (e) => { e.preventDefault(); if (!isDrawing) return; const pos = getPos(e); ctx.lineTo(pos.x, pos.y); ctx.stroke(); };
+    const end = (e) => { e.preventDefault(); isDrawing = false; };
 
-function draw(e) {
-    if (!isDrawing) return;
-    const rect = signatureCanvas.getBoundingClientRect();
-    signatureCtx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
-    signatureCtx.stroke();
-}
-
-function stopDrawing() {
-    isDrawing = false;
-    signatureCtx.closePath();
+    canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move); canvas.addEventListener('mouseup', end); canvas.addEventListener('mouseout', end);
+    canvas.addEventListener('touchstart', start, {passive: false}); canvas.addEventListener('touchmove', move, {passive: false}); canvas.addEventListener('touchend', end);
+    signaturePadInstance = { clear: () => { ctx.clearRect(0, 0, canvas.width, canvas.height); } };
 }
 
 window.clearSignature = function() {
-    if(signatureCtx && signatureCanvas) {
-        signatureCtx.fillStyle = '#ffffff';
-        signatureCtx.fillRect(0, 0, signatureCanvas.width, signatureCanvas.height);
-    }
+    if(signaturePadInstance) signaturePadInstance.clear();
 };
 
 window.confirmSignature = function() {
-    if (!currentDeliverySignRowIdx) return;
+    const canvas = document.getElementById('signaturePad');
     
-    // 檢查是否有簽名 (簡單透過像素比對，全白代表沒簽)
     const blank = document.createElement('canvas');
-    blank.width = signatureCanvas.width;
-    blank.height = signatureCanvas.height;
-    const blankCtx = blank.getContext('2d');
-    blankCtx.fillStyle = '#ffffff';
-    blankCtx.fillRect(0, 0, blank.width, blank.height);
-    
-    if (signatureCanvas.toDataURL() === blank.toDataURL()) {
-        if(!confirm("您尚未簽名，確定要強制結案嗎？")) return;
-    }
+    blank.width = canvas.width; blank.height = canvas.height;
+    if(canvas.toDataURL() === blank.toDataURL()) return alert("請先完成簽名！");
 
-    const base64Sign = signatureCanvas.toDataURL('image/png');
+    const signatureData = canvas.toDataURL('image/png');
+    const rowIdx = Number(document.getElementById('ds_rowIdx').value);
     
-    const d = globalDeliveries.find(x => x.rowIdx === currentDeliverySignRowIdx);
-    if(d) {
-        d.status = '已結案';
-        d.signature = base64Sign;
-    }
-
-    pushToSyncQueue('updateDeliveryStatus', { action: 'sign', rowIdx: currentDeliverySignRowIdx, signature: base64Sign }, null);
+    pushToSyncQueue('updateDeliveryStatus', { action: 'sign', rowIdx: rowIdx, signatureData: signatureData });
     
     bootstrap.Modal.getInstance(document.getElementById('deliverySignModal')).hide();
-    window.renderDeliveryList();
-    showToast("✅ 電子簽收完成，案件已結案歸檔！");
+    renderDeliveryList();
+    showToast("✅ 簽收完成，案件已結案！");
 };
-
-// ============================================================================
-// 4. 完美還原 A5 實體送貨單 (列印與預覽引擎)
-// ============================================================================
-window.printDeliverySlip = function(idx) {
-    const html = buildDeliveryPrintHtml(idx, false);
-    const printArea = document.getElementById('printDeliveryArea');
-    if (printArea) {
-        printArea.innerHTML = html;
-        if (typeof window.applyPrintStyle === 'function') window.applyPrintStyle('A5', 'landscape');
-        if (typeof window.showPrintPreview === 'function') window.showPrintPreview('printDeliveryArea');
-    }
-};
-
-function buildDeliveryPrintHtml(idx, isPreviewMode) {
-    const d = globalDeliveries.find(x => x.rowIdx === idx);
-    if (!d) return '';
-
-    let items = []; try { items = JSON.parse(d.itemsStr); } catch(e){}
-    
-    // 計算單號與排版空間
-    const dateStr = d.deliveryDate ? d.deliveryDate.replace(/-/g, '/') : getTodayStr().replace(/-/g, '/');
-    let totalAmount = 0;
-    const totalRows = Math.max(items.length, 5); // 至少保留 5 行的空間讓版面好看
-
-    // 取得商品單價以計算金額
-    let tbodyHtml = '';
-    for (let i = 0; i < totalRows; i++) {
-        if (i < items.length) {
-            const item = items[i];
-            const p = globalCatalog.find(x => x.productName === item.name && x.clientName === d.client);
-            const price = p ? Number(p.price) : 0;
-            const subtotal = price * Number(item.qty);
-            totalAmount += subtotal;
-
-            let specDesc = item.name;
-            if (item.batchTarget) specDesc += ` <span style="font-size: 0.85em; color: #555;">(批號: ${item.batchTarget})</span>`;
-            if (item.exp) specDesc += ` <span style="font-size: 0.85em; color: #555;">(效期: ${item.exp})</span>`;
-
-            tbodyHtml += `
-                <tr>
-                    <td style="border: 1px solid #000; padding: 5px; text-align: center;">${item.orderNo || ''}</td>
-                    <td style="border: 1px solid #000; padding: 5px; text-align: left;">${specDesc}</td>
-                    <td style="border: 1px solid #000; padding: 5px; text-align: center;">${item.qty}</td>
-                    <td style="border: 1px solid #000; padding: 5px; text-align: right;">${price.toLocaleString()}</td>
-                    <td style="border: 1px solid #000; padding: 5px; text-align: right;">${subtotal.toLocaleString()}</td>
-                    ${i === 0 ? `<td rowspan="${totalRows}" style="width: 25%; border: 1px solid #000; padding: 5px; vertical-align: top; text-align: center; position: relative;">${getSignatureImgHtml(d)}</td>` : ''}
-                </tr>
-            `;
-        } else {
-            // 補齊空列
-            tbodyHtml += `
-                <tr>
-                    <td style="border: 1px solid #000; padding: 5px;">&nbsp;</td>
-                    <td style="border: 1px solid #000; padding: 5px;"></td>
-                    <td style="border: 1px solid #000; padding: 5px;"></td>
-                    <td style="border: 1px solid #000; padding: 5px;"></td>
-                    <td style="border: 1px solid #000; padding: 5px;"></td>
-                    ${i === 0 ? `<td rowspan="${totalRows}" style="width: 25%; border: 1px solid #000; padding: 5px; vertical-align: top; text-align: center; position: relative;">${getSignatureImgHtml(d)}</td>` : ''}
-                </tr>
-            `;
-        }
-    }
-
-    // A5 橫向排版
-    const containerStyle = isPreviewMode 
-        ? `width: 100%; min-width: 600px; transform: scale(0.9); transform-origin: top left; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000;` 
-        : `width: 100%; max-width: 1000px; margin: 0 auto; background: #fff; padding: 10mm 15mm; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000; min-height: 130mm; display: flex; flex-direction: column;`;
-
-    return `
-        <div style="${containerStyle}">
-            <!-- 表頭區塊 -->
-            <div style="position: relative; text-align: center; margin-bottom: 20px;">
-                <div style="font-size: 26px; font-weight: 900; letter-spacing: 5px;">長固實業有限公司</div>
-                <div style="display: inline-block; font-size: 32px; font-weight: bold; letter-spacing: 15px; margin-top: 5px; border-bottom: 2px double #000; padding-bottom: 5px;">送貨單</div>
-                <div style="position: absolute; right: 0; bottom: 0; font-size: 20px; font-weight: bold;">No. <span style="color: #d32f2f;">${d.rowIdx.toString().padStart(5, '0')}</span></div>
-            </div>
-
-            <!-- 客戶與日期 -->
-            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px; font-size: 16px; font-weight: bold;">
-                <div style="width: 60%;">客 戶 名 稱：<span style="border-bottom: 1px solid #000; display: inline-block; width: 70%; padding-bottom: 2px;">${escapeQuotes(d.client)}</span></div>
-                <div style="width: 30%; text-align: right;">${dateStr.split('/')[0]} 年 ${dateStr.split('/')[1]} 月 ${dateStr.split('/')[2]} 日</div>
-            </div>
-
-            <!-- 核心明細表格 -->
-            <table style="width: 100%; border-collapse: collapse; font-size: 15px; border: 2px solid #000; flex-grow: 1;">
-                <thead>
-                    <tr>
-                        <!-- 【變更】項次改為訂單號碼 -->
-                        <th style="border: 1px solid #000; padding: 8px; width: 15%; text-align: center;">訂單號碼</th>
-                        <th style="border: 1px solid #000; padding: 8px; width: 35%; text-align: center;">品  名  規  格</th>
-                        <th style="border: 1px solid #000; padding: 8px; width: 8%; text-align: center;">數 量</th>
-                        <th style="border: 1px solid #000; padding: 8px; width: 12%; text-align: center;">單 價</th>
-                        <th style="border: 1px solid #000; padding: 8px; width: 12%; text-align: center;">金  額</th>
-                        <th style="border: 1px solid #000; padding: 8px; width: 18%; text-align: center;">客 戶 簽 收</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${tbodyHtml}
-                </tbody>
-                <tfoot>
-                    <tr>
-                        <!-- 【去敏】徹底移除原本的發票編號欄位顯示，改留白維持排版 -->
-                        <td colspan="4" style="border: 1px solid #000; padding: 8px; font-weight: bold; text-align: right;"></td>
-                        <td style="border: 1px solid #000; padding: 8px; font-weight: bold; text-align: right; background-color: #f9f9f9;">${totalAmount.toLocaleString()}</td>
-                        <td style="border: 1px solid #000; padding: 8px; text-align: center; font-weight: bold;">總 計 新 台 幣</td>
-                    </tr>
-                </tfoot>
-            </table>
-            
-            <div style="margin-top: 15px; font-size: 14px; line-height: 1.6;">
-                <p style="margin-bottom: 15px;">以上貨品數量及單價請查核.</p>
-                <div style="margin-top: 30px;">
-                    <div style="width: 45%;">簽收: <span style="border-bottom: 1px solid #000; display: inline-block; width: 75%;">&nbsp;</span></div>
-                </div>
-            </div>
-        </div>
-    `;
-}
-
-// 產生合成簽名的圖片標籤
-function getSignatureImgHtml(deliveryObj) {
-    if (deliveryObj.signature && deliveryObj.signature.length > 50) {
-        return `<img src="${deliveryObj.signature}" style="max-width: 95%; max-height: 120px; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); mix-blend-mode: multiply;">`;
-    }
-    return '';
-}
