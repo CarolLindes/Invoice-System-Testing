@@ -1,7 +1,6 @@
 /**
  * ============================================================================
- * 模組 6：送貨追蹤與電子簽收模組 (module_delivery.js) - 【作廢連動版】
- * 全新獨立模組：負責物流狀態追蹤、A5 送貨單列印與 Canvas 電子簽收
+ * 模組 6：送貨追蹤與電子簽收模組 (module_delivery.js) - 【最終物理合併與拆分升級版】
  * ============================================================================
  */
 
@@ -17,7 +16,6 @@ window.renderDeliveryList = debounce(function() {
 
     let arr = globalDeliveries || [];
 
-    // 關鍵字篩選
     if (term) {
         arr = arr.filter(d => 
             (d.client || '').toLowerCase().includes(term) ||
@@ -28,9 +26,7 @@ window.renderDeliveryList = debounce(function() {
         );
     }
 
-    // 送貨方式篩選
     if (filterMethod) arr = arr.filter(d => d.deliveryMethod === filterMethod);
-    // 狀態篩選
     if (filterStatus) arr = arr.filter(d => d.status === filterStatus);
 
     let pending = arr.filter(d => d.status === '待送貨');
@@ -62,8 +58,13 @@ function buildDeliveryHtml(dataArr, isPending) {
 
         if (isPending) {
             checkboxHtml = `<input class="form-check-input me-3 cb-del" type="checkbox" value="${d.rowIdx}" style="transform: scale(1.3); flex-shrink: 0;">`;
-            // 【優化】新增紅色的「作廢」按鈕
             actionBtns += `<button class="btn btn-sm btn-outline-danger fw-bold me-2" onclick="voidDeliveryAndInvoice(${d.rowIdx})">作廢</button>`;
+            
+            // 【新功能】如果這張單據包含多個發票號碼(有逗號)，代表是合併單，顯示「還原拆分」按鈕
+            if (String(d.paperNo).includes(',')) {
+                actionBtns += `<button class="btn btn-sm btn-outline-secondary fw-bold me-2" onclick="unmergeDelivery(${d.rowIdx})">✂️ 還原拆分</button>`;
+            }
+            
             actionBtns += `<button class="btn btn-sm btn-primary fw-bold" onclick="openDeliveryActionModal([${d.rowIdx}])">執行送貨</button>`;
         } else {
             if (d.status === '已送貨') {
@@ -101,23 +102,20 @@ function buildDeliveryHtml(dataArr, isPending) {
 }
 
 // ============================================================================
-// 【全新升級】作廢送貨單，並雙向連動作廢發票與庫存返還
+// 作廢送貨單，並雙向連動作廢發票與庫存返還
 // ============================================================================
 window.voidDeliveryAndInvoice = function(idx) {
     const d = globalDeliveries.find(x => x.rowIdx === idx);
     if (!d) return;
     if (!confirm(`確定要作廢此筆送貨作業嗎？\n⚠️ 系統將自動連動：\n1. 作廢關聯的發票 (${d.paperNo})\n2. 註銷銷售明細\n3. 完整返還出貨庫存`)) return;
 
-    // 將送貨單狀態設為已作廢
     d.status = '已作廢';
 
-    // 尋找並作廢對應的發票
     let paperNos = d.paperNo.split(',').map(s=>s.trim()).filter(x=>x);
     paperNos.forEach(pNo => {
         const h = globalHistory.find(x => x.paperNo === pNo);
         if (h) h.status = '作廢';
 
-        // 註銷明細並返還庫存
         globalSalesDetails.forEach(sd => {
             if (sd.paperNo === pNo && sd.shipStatus !== '作廢') {
                 sd.shipStatus = '作廢';
@@ -129,13 +127,11 @@ window.voidDeliveryAndInvoice = function(idx) {
             }
         });
 
-        // 推播給 API 中樞執行 Supabase 雙軌寫入
         if (h) {
             pushToSyncQueue('updateInvoiceRecord', {action:'void', rowIdx: h.rowIdx, staff: myName, paperNo: pNo}, null);
         }
     });
 
-    // 刷新所有模組 UI
     if(typeof window.populateLogDropdowns === 'function') window.populateLogDropdowns();
     if(typeof window.renderHistory === 'function') window.renderHistory();
     if(typeof window.renderInventory === 'function') window.renderInventory();
@@ -148,7 +144,7 @@ window.voidDeliveryAndInvoice = function(idx) {
 };
 
 // ============================================================================
-// 2. 執行送貨與編輯資訊 (Delivery Action)
+// 2. 【全新升級】批次執行與自動物理合併機制
 // ============================================================================
 window.groupExecuteDelivery = function() {
     const cbs = document.querySelectorAll('.cb-del:checked');
@@ -198,30 +194,44 @@ window.confirmDeliveryAction = function() {
         }
     });
 
+    let mergedUpdates = [];
+    let rowsToDelete = [];
+
     for (let client in clientGroups) {
         let group = clientGroups[client];
         if (group.length === 1) {
             let d = group[0];
             d.status = '已送貨'; d.deliveryDate = date; d.deliveryMethod = method; d.memo = memo;
+            mergedUpdates.push(d);
         } else {
             let mainD = group[0];
             let mergedItems = [];
-            let pNos = new Set(mainD.paperNo.split(',').map(s=>s.trim()).filter(x=>x));
-            let oNos = new Set((mainD.orderNo||'').split(',').map(s=>s.trim()).filter(x=>x));
-            let lots = new Set((mainD.lot||'').split(',').map(s=>s.trim()).filter(x=>x));
-            let exps = new Set((mainD.expiry||'').split(',').map(s=>s.trim()).filter(x=>x));
+            let pNos = new Set(); let oNos = new Set();
+            let lots = new Set(); let exps = new Set();
 
             group.forEach((d, index) => {
                 let items = []; try { items = JSON.parse(d.itemsStr); } catch(e){}
+                
+                // 【關鍵】在合併時，將來源發票與單號紀錄在品項內部，為未來的「還原拆分」做準備
+                items.forEach(i => {
+                    if(!i._sourcePaperNo) i._sourcePaperNo = d.paperNo;
+                    if(!i._sourceOrderNo) i._sourceOrderNo = d.orderNo;
+                    if(!i._sourceLot) i._sourceLot = d.lot;
+                    if(!i._sourceExp) i._sourceExp = d.expiry;
+                });
+                
+                d.paperNo.split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>pNos.add(x));
+                (d.orderNo||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>oNos.add(x));
+                (d.lot||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>lots.add(x));
+                (d.expiry||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>exps.add(x));
+                
                 if(index > 0) {
-                    d.paperNo.split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>pNos.add(x));
-                    (d.orderNo||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>oNos.add(x));
-                    (d.lot||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>lots.add(x));
-                    (d.expiry||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>exps.add(x));
+                    rowsToDelete.push(d.rowIdx);
                     globalDeliveries = globalDeliveries.filter(x => x.rowIdx !== d.rowIdx); 
                 }
                 mergedItems.push(...items);
             });
+            
             mainD.paperNo = Array.from(pNos).join(', ');
             mainD.orderNo = Array.from(oNos).join(', ');
             mainD.lot = Array.from(lots).join(', ');
@@ -231,16 +241,79 @@ window.confirmDeliveryAction = function() {
             mainD.deliveryDate = date;
             mainD.deliveryMethod = method;
             mainD.memo = memo;
+            
+            mergedUpdates.push(mainD);
         }
     }
 
-    pushToSyncQueue('batchExecuteDeliveries', {
-        rowIndices: ids, deliveryDate: date, deliveryMethod: method, memo: memo
+    pushToSyncQueue('mergeAndExecuteDeliveries', {
+        mergedUpdates: mergedUpdates, 
+        rowsToDelete: rowsToDelete
     }, null);
 
     window.renderDeliveryList();
     bootstrap.Modal.getInstance(document.getElementById('deliveryActionModal')).hide();
     showToast("🚚 批次送貨處理完成！(同客戶之單據已自動智慧合併)");
+};
+
+// ============================================================================
+// 【全新升級】還原拆分合併的送貨單
+// ============================================================================
+window.unmergeDelivery = function(idx) {
+    if(!confirm("確定要將此合併送貨單還原拆分為多筆原始單據嗎？")) return;
+    
+    const d = globalDeliveries.find(x => x.rowIdx === idx);
+    if(!d) return;
+
+    let items = []; try { items = JSON.parse(d.itemsStr); } catch(e){}
+    
+    let groups = {};
+    items.forEach(i => {
+        let pNo = i._sourcePaperNo || d.paperNo;
+        if(!groups[pNo]) groups[pNo] = { items: [], orderNo: i._sourceOrderNo||'', lot: i._sourceLot||'', exp: i._sourceExp||'' };
+        
+        // 抹除追蹤屬性，還原為乾淨的項目
+        let cleanItem = { ...i };
+        delete cleanItem._sourcePaperNo;
+        delete cleanItem._sourceOrderNo;
+        delete cleanItem._sourceLot;
+        delete cleanItem._sourceExp;
+        
+        groups[pNo].items.push(cleanItem);
+    });
+
+    let newDeliveries = [];
+    for (let pNo in groups) {
+        let g = groups[pNo];
+        newDeliveries.push({
+            rowIdx: Date.now() + Math.floor(Math.random() * 10000),
+            time: Date.now(),
+            paperNo: pNo,
+            client: d.client,
+            itemsStr: JSON.stringify(g.items),
+            status: '待送貨', // 拆分後必定是待送貨狀態
+            deliveryDate: '',
+            deliveryMethod: '',
+            memo: '',
+            signature: '',
+            staff: myName,
+            orderNo: g.orderNo,
+            lot: g.lot,
+            expiry: g.exp
+        });
+    }
+
+    // 實體替換
+    globalDeliveries = globalDeliveries.filter(x => x.rowIdx !== idx);
+    globalDeliveries.unshift(...newDeliveries);
+
+    pushToSyncQueue('unmergeDeliveries', {
+        rowToUnmerge: idx,
+        newRows: newDeliveries
+    }, null);
+
+    window.renderDeliveryList();
+    showToast("✂️ 已成功還原拆分為多筆原始待送貨單！");
 };
 
 // ============================================================================
@@ -397,7 +470,7 @@ function buildDeliveryPrintHtml(idx, isPreviewMode) {
 
                 tbodyHtml += `
                     <tr>
-                        <td style="border: 1px solid #000; padding: 5px; text-align: center; height: 35px;">${item.orderNo || ''}</td>
+                        <td style="border: 1px solid #000; padding: 5px; text-align: center; height: 35px;">${item.orderNo || item._sourceOrderNo || ''}</td>
                         <td style="border: 1px solid #000; padding: 5px; text-align: left;">${specDesc}</td>
                         <td style="border: 1px solid #000; padding: 5px; text-align: center;">${item.qty}</td>
                         <td style="border: 1px solid #000; padding: 5px; text-align: right;">${price.toLocaleString()}</td>
@@ -482,7 +555,7 @@ function buildDeliveryPrintHtml(idx, isPreviewMode) {
 // 產生合成簽名的圖片標籤
 function getSignatureImgHtml(deliveryObj) {
     if (deliveryObj.signature && deliveryObj.signature.length > 50) {
-        return `<img src="${deliveryObj.signature}" style="max-width: 95%; max-height: 120px; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); mix-blend-mode: multiply;">`;
+        return `<img src="${deliveryObj.signature}" crossorigin="anonymous" style="max-width: 95%; max-height: 120px; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); mix-blend-mode: multiply;">`;
     }
     return '';
 }
