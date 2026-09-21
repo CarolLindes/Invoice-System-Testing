@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 模組 1：API 核心、全域狀態與雙軌並行架構 (api_core.js) - 【寫入中樞大一統版】
+ * 模組 1：API 核心、全域狀態與雙軌並行架構 (api_core.js) - 【最終列印分享升級版】
  * ============================================================================
  */
 
@@ -11,8 +11,15 @@ const API_URL = "https://script.google.com/macros/s/AKfycbxWzxfHYdw9qvcPtGpU2qjx
 const SUPABASE_URL = "https://dojhiznffztiyofkfdiu.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvamhpem5mZnp0aXlvZmtmZGl1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzk3MzYsImV4cCI6MjEwNTMxNTczNn0.reT6i25kO1d1V8p2fDMHOOPVxaUJfp9SxOFeg-_xFqI";
 
-// 🔥 修正：使用 supabaseClient 作為變數名稱，避開全域變數衝突
+// 🔥 使用 supabaseClient 作為變數名稱，避開全域變數衝突
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// 【全新】背景動態載入 PDF 生成引擎，不影響網頁初次載入速度
+(function() {
+    const script = document.createElement('script');
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
+    document.head.appendChild(script);
+})();
 
 // ============================================================================
 // 全域變數與狀態管理
@@ -65,15 +72,12 @@ async function callApi(action, payload = {}) {
 }
 
 // ============================================================================
-// 【全新大一統】Supabase 雙軌寫入路由中樞 (涵蓋全系統所有更新操作)
+// Supabase 雙軌寫入路由中樞 (涵蓋全系統所有更新操作)
 // ============================================================================
 async function dualWriteToSupabase(action, payload) {
     try {
         console.log(`[雙軌寫入] 準備同步 ${action} 至 Supabase...`);
         
-        // ==========================================
-        // 📦 訂單模組
-        // ==========================================
         if (action === 'saveOrderData') {
             const items = payload.items || [];
             await supabaseClient.from('orders').upsert({
@@ -86,10 +90,6 @@ async function dualWriteToSupabase(action, payload) {
         else if (action === 'updateOrderStatus') {
             await supabaseClient.from('orders').update({ status: payload.status }).in('row_idx', payload.rowIndices);
         }
-
-        // ==========================================
-        // 📝 發票模組
-        // ==========================================
         else if (action === 'submitInvoice') {
             await supabaseClient.from('invoices').insert({
                 row_idx: Date.now(), time: payload.invDate, staff: payload.staff,
@@ -111,7 +111,11 @@ async function dualWriteToSupabase(action, payload) {
         else if (action === 'updateInvoiceRecord') {
             if (payload.action === 'void') {
                 await supabaseClient.from('invoices').update({ status: '作廢' }).eq('row_idx', payload.rowIdx);
-                if (payload.paperNo) await supabaseClient.from('sales_details').update({ ship_status: '作廢' }).eq('paper_no', payload.paperNo);
+                if (payload.paperNo) {
+                    await supabaseClient.from('sales_details').update({ ship_status: '作廢' }).eq('paper_no', payload.paperNo);
+                    // 【優化】連動將對應的送貨單標記為「已作廢」
+                    await supabaseClient.from('deliveries').update({ status: '已作廢' }).eq('paper_no', payload.paperNo);
+                }
             } else if (payload.action === 'edit') {
                 await supabaseClient.from('invoices').update({
                     client: payload.data.client, tax_id: payload.data.taxId, paper_no: payload.data.paperNo,
@@ -124,10 +128,6 @@ async function dualWriteToSupabase(action, payload) {
             await supabaseClient.from('invoices').update({ paper_no: payload.newPaperNo }).eq('row_idx', payload.rowIdx);
             await supabaseClient.from('sales_details').update({ paper_no: payload.newPaperNo }).eq('paper_no', payload.oldPaperNo);
         }
-
-        // ==========================================
-        // 🏭 庫存與出貨模組
-        // ==========================================
         else if (action === 'adjustInventory') {
             const { data: inv } = await supabaseClient.from('inventory').select('*').eq('name', payload.name).single();
             let currentNewQty = payload.changeQty;
@@ -186,6 +186,24 @@ async function dualWriteToSupabase(action, payload) {
                     });
                 }
             }
+            
+            // 【優化】將出貨轉為「待送貨」的動作極速寫入 Supabase，解決延遲問題
+            if (payload.newDeliveries && payload.newDeliveries.length > 0) {
+                await supabaseClient.from('deliveries').insert(
+                    payload.newDeliveries.map(d => ({
+                        row_idx: d.rowIdx, time: d.time, paper_no: d.paperNo, client: d.client,
+                        items_str: d.itemsStr, status: '待送貨', delivery_date: '', delivery_method: '',
+                        memo: '', signature: '', staff: payload.staff, order_no: d.orderNo, lot: d.lot, expiry: d.expiry
+                    }))
+                );
+            }
+            if (payload.updateDeliveries && payload.updateDeliveries.length > 0) {
+                for (let d of payload.updateDeliveries) {
+                    await supabaseClient.from('deliveries').update({
+                        items_str: d.itemsStr, order_no: d.orderNo, lot: d.lot, expiry: d.expiry
+                    }).eq('paper_no', d.paperNo).eq('status', '待送貨');
+                }
+            }
         } 
         else if (action === 'submitPurchaseOrder') {
             await supabaseClient.from('inventory_logs').insert({
@@ -218,10 +236,6 @@ async function dualWriteToSupabase(action, payload) {
                 await supabaseClient.from('inventory').update({ batches_str: JSON.stringify(batches) }).eq('name', payload.name);
             }
         }
-
-        // ==========================================
-        // ⚙️ 管理員後台模組
-        // ==========================================
         else if (action === 'addClientData') {
             await supabaseClient.from('clients').insert({
                 name: payload.clientName, tax_id: payload.taxId, address: payload.address, receive_dept: payload.receiveDept
@@ -240,10 +254,6 @@ async function dualWriteToSupabase(action, payload) {
                 internal_code: payload.internalCode, unit: payload.unit, price: payload.price
             });
         }
-
-        // ==========================================
-        // 📑 估價單模組
-        // ==========================================
         else if (action === 'saveQuotation') {
             await supabaseClient.from('quotations').upsert({
                 row_idx: payload.rowIdx || Date.now(), time: Date.now(), quote_no: payload.quoteNo,
@@ -269,10 +279,6 @@ async function dualWriteToSupabase(action, payload) {
                 json_str: JSON.stringify(payload.voidItems), use_seal: payload.useSeal, staff: payload.staff, merge_id: ''
             });
         }
-
-        // ==========================================
-        // 🚚 送貨單與電子簽收模組
-        // ==========================================
         else if (action === 'updateDeliveryInfo') {
             await supabaseClient.from('deliveries').update({
                 status: payload.status, delivery_date: payload.deliveryDate, delivery_method: payload.deliveryMethod, memo: payload.memo
@@ -298,7 +304,7 @@ async function dualWriteToSupabase(action, payload) {
 }
 
 // ============================================================================
-// 背景同步佇列系統 (加入 Race Condition 狀態鎖)
+// 背景同步佇列系統 (Race Condition 狀態鎖)
 // ============================================================================
 let bgSyncQueue = []; 
 let isSyncing = false; 
@@ -321,7 +327,7 @@ function triggerSync() {
     isSyncing = true; 
     const task = bgSyncQueue[0];
     
-    let isTaskResolved = false; // 狀態鎖定：防止超時與回傳同時發生
+    let isTaskResolved = false; 
     
     clearTimeout(syncTimeoutTimer);
     syncTimeoutTimer = setTimeout(() => {
@@ -332,7 +338,6 @@ function triggerSync() {
         handleSyncRetry(task);
     }, 28000);
 
-    // 🔥 雙軌並行核心：同時呼叫 Supabase 與 GAS
     dualWriteToSupabase(task.action, task.payload);
 
     callApi(task.action, task.payload).then(res => {
@@ -529,7 +534,6 @@ async function loadDataFromSupabase() {
         supabaseClient.from('email_settings').select('*')
     ]);
 
-    // 將 Supabase 的蛇形命名 (snake_case) 自動轉換回系統適用的駝峰命名 (camelCase)
     globalClients = (c || []).map(x => ({name: x.name, taxId: x.tax_id, address: x.address, receiveDept: x.receive_dept}));
     globalSuppliers = (s || []).map(x => ({name: x.name, code: x.code, phone: x.phone, fax: x.fax}));
     globalCatalog = (cat || []).map(x => ({rowIndex: x.row_index, assetCode: x.asset_code, internalCode: x.internal_code, clientName: x.client_name, productName: x.product_name, unit: x.unit, price: Number(x.price)}));
@@ -548,7 +552,7 @@ async function loadDataFromSupabase() {
 }
 
 // ============================================================================
-// UI 全域刷新控制器 (避免重複撰寫)
+// UI 全域刷新控制器
 // ============================================================================
 function refreshAllUI() {
     if (typeof window.populateAdminClientFilter === "function") window.populateAdminClientFilter();
@@ -587,17 +591,12 @@ function silentRefreshData() {
     }).catch(err => console.log('背景靜默同步 Supabase 失敗:', err));
 }
 
-// ============================================================================
-// Supabase Realtime 即時監聽器 (加入 Debounce 防抖機制)
-// ============================================================================
 let realtimeDebounceTimer = null;
-
 function setupSupabaseRealtime() {
     supabaseClient.channel('custom-all-channel')
         .on('postgres_changes', { event: '*', schema: 'public' }, payload => {
             console.log('🔄 Supabase 偵測到資料庫變更:', payload);
             if (!isSyncing && bgSyncQueue.length === 0) {
-                // 收到推播後等待 1.5 秒，避免短時間內大量變更觸發過多請求
                 clearTimeout(realtimeDebounceTimer);
                 realtimeDebounceTimer = setTimeout(() => {
                     silentRefreshData(); 
@@ -633,7 +632,7 @@ function debounce(func, delay = 300) {
 }
 
 // ============================================================================
-// 動態切換紙張版型與防擠壓預覽系統
+// 【全新】動態切換紙張版型、解除手機列印限制、PDF 高畫質分享引擎
 // ============================================================================
 window.applyPrintStyle = function(size, layout) {
     let styleNode = document.getElementById('dynamicPrintStyle');
@@ -655,7 +654,7 @@ window.applyPrintStyle = function(size, layout) {
         }
     }
     @media print { 
-        body { background: #fff !important; padding-top: 0 !important; } 
+        html, body { height: auto !important; overflow: visible !important; background: #fff !important; padding-top: 0 !important; margin: 0 !important; } 
         #printControlBar { display: none !important; }
         .print-active { padding: 0 !important; overflow: visible !important; }
         .print-active > div { min-width: 100% !important; margin: 0 !important; box-shadow: none !important; }
@@ -686,18 +685,25 @@ window.showPrintPreview = function(areaId) {
     if (!controlBar) {
         controlBar = document.createElement('div');
         controlBar.id = 'printControlBar';
-        controlBar.className = 'd-flex justify-content-center p-3 position-fixed w-100 top-0 d-print-none';
+        // 【優化】加入 PDF 分享按鈕與 Flex 排版
+        controlBar.className = 'd-flex justify-content-center flex-wrap gap-2 p-3 position-fixed w-100 top-0 d-print-none';
         controlBar.style.cssText = 'z-index: 10500; left: 0; background-color: #343a40; box-shadow: 0 4px 6px rgba(0,0,0,0.3);';
-        controlBar.innerHTML = `
-            <button onclick="window.print()" class="btn btn-primary fw-bold px-4 py-2 me-3 fs-5 shadow-sm">🖨️ 確認呼叫印表機</button>
-            <button onclick="closePrintPreview()" class="btn btn-danger fw-bold px-4 py-2 fs-5 shadow-sm">❌ 關閉預覽並返回</button>
-        `;
         document.body.appendChild(controlBar);
     }
+    controlBar.innerHTML = `
+        <button onclick="window.print()" class="btn btn-primary fw-bold px-3 py-2 shadow-sm">🖨️ 確認列印</button>
+        <button onclick="window.sharePdf('${areaId}')" class="btn btn-success fw-bold px-3 py-2 shadow-sm">📤 分享檔案(PDF)</button>
+        <button onclick="closePrintPreview()" class="btn btn-danger fw-bold px-3 py-2 shadow-sm">❌ 關閉返回</button>
+    `;
     controlBar.style.display = 'flex';
+    
+    // 【極重要修復】解除手機版 100vh 高度鎖定，讓手機系統能正確計算出所有頁數
+    document.documentElement.style.height = 'auto';
+    document.documentElement.style.overflow = 'visible';
+    document.body.style.height = 'auto';
+    document.body.style.overflow = 'visible';
     document.body.style.backgroundColor = '#2c3034';
     document.body.style.paddingTop = '80px'; 
-    document.body.style.overflow = 'auto'; 
     window.scrollTo(0,0);
 };
 
@@ -705,9 +711,13 @@ window.closePrintPreview = function() {
     let controlBar = document.getElementById('printControlBar');
     if(controlBar) controlBar.remove(); 
     
+    // 【修復】還原手機版高度限制
+    document.documentElement.style.height = '';
+    document.documentElement.style.overflow = '';
+    document.body.style.height = '';
+    document.body.style.overflow = '';
     document.body.style.paddingTop = '0px';
     document.body.style.backgroundColor = ''; 
-    document.body.style.overflow = ''; 
     
     ['printArea', 'printPoArea', 'printQuoteArea', 'printDeliveryArea'].forEach(id => {
         const el = document.getElementById(id);
@@ -722,6 +732,56 @@ window.closePrintPreview = function() {
     });
     
     document.getElementById('mainApp').style.display = 'block';
+};
+
+// 【全新】分享 PDF 高畫質引擎
+window.sharePdf = async function(areaId) {
+    if (typeof html2pdf === 'undefined') {
+        alert("PDF 模組載入中，請稍等一秒後再試！");
+        return;
+    }
+    showLoading("📄 正在產生高畫質 PDF，請稍候...");
+    const element = document.getElementById(areaId);
+    
+    const opt = {
+        margin:       0,
+        filename:     `長固ERP_單據_${Date.now()}.pdf`,
+        image:        { type: 'jpeg', quality: 0.98 },
+        html2canvas:  { scale: 2, useCORS: true, letterRendering: true },
+        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    };
+    
+    // 若為送貨單或訂貨單，動態切換為 A5 橫向
+    if(areaId === 'printDeliveryArea' || areaId === 'printPoArea') {
+        opt.jsPDF.format = 'a5';
+        opt.jsPDF.orientation = 'landscape';
+    }
+
+    try {
+        const pdfBlob = await html2pdf().set(opt).from(element).output('blob');
+        hideLoading();
+        
+        const file = new File([pdfBlob], opt.filename, { type: 'application/pdf' });
+        
+        // 喚醒手機原生分享機制 (Line, Gmail 等)
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({
+                title: '長固ERP 單據',
+                text: '您好，附上系統開立之單據 PDF 檔案，請查收。',
+                files: [file]
+            });
+        } else {
+            // 電腦版或不支援 Web Share API 的瀏覽器，自動轉為下載檔案
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(pdfBlob);
+            link.download = opt.filename;
+            link.click();
+            showToast("⬇️ 裝置不支援直接分享，已自動為您下載 PDF。");
+        }
+    } catch (err) {
+        hideLoading();
+        alert("產生或分享 PDF 時發生錯誤：" + err.message);
+    }
 };
 
 // ============================================================================
@@ -776,9 +836,6 @@ window.onload = function() {
         document.getElementById('authScreen').style.display = 'flex'; 
     }
     
-    // ============================================================================
-    // 智能心跳系統 (維持舊系統上線人數統計)
-    // ============================================================================
     setInterval(() => { 
         if(document.getElementById('mainApp') && document.getElementById('mainApp').style.display === 'block') { 
             callApi('heartbeat', { uid: myUid }).then(res => { 
