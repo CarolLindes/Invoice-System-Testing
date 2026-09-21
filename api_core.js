@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 模組 1：API 核心、全域狀態與雙軌並行架構 (api_core.js) - 【上半部】
+ * 模組 1：API 核心、全域狀態與雙軌並行架構 (api_core.js)
  * ============================================================================
  */
 
@@ -10,8 +10,6 @@ const API_URL = "https://script.google.com/macros/s/AKfycbxWzxfHYdw9qvcPtGpU2qjx
 // 🟢 新版系統 API 端點 (Supabase)
 const SUPABASE_URL = "https://dojhiznffztiyofkfdiu.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvamhpem5mZnp0aXlvZmtmZGl1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzk3MzYsImV4cCI6MjEwNTMxNTczNn0.reT6i25kO1d1V8p2fDMHOOPVxaUJfp9SxOFeg-_xFqI";
-
-// 🔥 修正：使用 supabaseClient 作為變數名稱，避開全域變數衝突
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ============================================================================
@@ -65,13 +63,12 @@ async function callApi(action, payload = {}) {
 }
 
 // ============================================================================
-// 【全新】Supabase 雙軌寫入路由中心
+// 【升級】Supabase 雙軌寫入路由中心 (已補齊所有通道)
 // ============================================================================
 async function dualWriteToSupabase(action, payload) {
     try {
         console.log(`[雙軌寫入] 準備同步 ${action} 至 Supabase...`);
         
-        // 依據不同行為，將資料極速寫入對應的 Supabase 表格
         if (action === 'saveOrderData') {
             const items = payload.items || [];
             await supabaseClient.from('orders').upsert({
@@ -99,6 +96,16 @@ async function dualWriteToSupabase(action, payload) {
                 await supabaseClient.from('sales_details').insert(sdArr);
             }
         } 
+        else if (action === 'updateInvoiceRecord') {
+            if (payload.action === 'void') {
+                await supabaseClient.from('invoices').update({ status: '作廢' }).eq('row_idx', payload.rowIdx);
+            } else {
+                await supabaseClient.from('invoices').update({
+                    paper_no: payload.paperNo, order_no: payload.orderNo,
+                    net: payload.net, tax: payload.tax, total: payload.total, details: payload.details
+                }).eq('row_idx', payload.rowIdx);
+            }
+        }
         else if (action === 'adjustInventory') {
             const { data: inv } = await supabaseClient.from('inventory').select('*').eq('name', payload.name).single();
             let currentNewQty = payload.changeQty;
@@ -162,6 +169,55 @@ async function dualWriteToSupabase(action, payload) {
             await supabaseClient.from('clients').insert({
                 name: payload.clientName, tax_id: payload.taxId, address: payload.address, receive_dept: payload.receiveDept
             });
+        }
+        else if (action === 'updateClientData') {
+            await supabaseClient.from('clients').update({
+                name: payload.newName, tax_id: payload.taxId, address: payload.address, receive_dept: payload.receiveDept
+            }).eq('name', payload.oldName);
+        }
+        else if (action === 'saveAdminItem') {
+            if (payload.rowIndex) {
+                await supabaseClient.from('catalog').update({
+                    asset_code: payload.internalCode, internal_code: payload.internalCode,
+                    client_name: payload.clientName, product_name: payload.productName,
+                    unit: payload.unit, price: payload.price
+                }).eq('row_index', payload.rowIndex);
+            } else {
+                await supabaseClient.from('catalog').insert({
+                    row_index: Date.now(), asset_code: payload.internalCode, internal_code: payload.internalCode,
+                    client_name: payload.clientName, product_name: payload.productName,
+                    unit: payload.unit, price: payload.price
+                });
+            }
+        }
+        else if (action === 'saveQuotation') {
+            await supabaseClient.from('quotations').upsert({
+                row_idx: payload.rowIdx || Date.now(), time: Date.now(), quote_no: payload.quoteNo,
+                quote_date: payload.quoteDate, client: payload.clientName, status: payload.status,
+                json_str: payload.jsonStr, use_seal: payload.useSeal, staff: payload.staff, memo: payload.memo
+            });
+        }
+        else if (action === 'batchExecuteDeliveries') {
+            for (let d of payload.deliveries) {
+                await supabaseClient.from('deliveries').insert({
+                    row_idx: Date.now() + Math.floor(Math.random() * 1000), time: Date.now(), paper_no: d.paperNo,
+                    client: d.client, items_str: d.itemsStr, status: '已送貨', delivery_date: d.date,
+                    delivery_method: d.method, memo: d.memo, staff: d.staff, order_no: d.orderNo,
+                    lot: d.lot, expiry: d.expiry
+                });
+                
+                const sourceIndices = d.sourceIndices || [];
+                for(let idx of sourceIndices) {
+                    await supabaseClient.from('sales_details').update({ ship_status: '已送貨' }).eq('row_idx', idx);
+                }
+            }
+        }
+        else if (action === 'updateDeliveryStatus') {
+            if (payload.action === 'sign') {
+                await supabaseClient.from('deliveries').update({ status: '已結案', signature: payload.signatureData }).eq('row_idx', payload.rowIdx);
+            } else if (payload.action === 'revert') {
+                await supabaseClient.from('deliveries').update({ status: '待送貨' }).eq('row_idx', payload.rowIdx);
+            }
         }
         console.log(`[雙軌寫入] ${action} 已極速發送至 Supabase`);
     } catch (e) {
@@ -324,6 +380,7 @@ function translateTaskDesc(t) {
         case 'updateDeliveryInfo': return `🚚 更新送貨資訊 | 狀態: ${p.status||''}`;
         case 'updateDeliveryStatus': return `📦 送貨狀態變更 | 動作: ${p.action === 'sign' ? '簽收結案' : '退回待送'}`;
         case 'editInvLogBatch': return `🔄 修改出貨批號 | 品名: ${p.name||'未知'} -> 新批號: ${p.newLot||'不分批'}`;
+        case 'batchExecuteDeliveries': return `🚚 批次排程送貨 | 數量: ${p.deliveries?.length||0} 筆`;
         default: return `⚙️ 系統操作 (${t.action})`;
     }
 }
@@ -390,7 +447,6 @@ async function loadDataFromSupabase() {
         supabaseClient.from('email_settings').select('*')
     ]);
 
-    // 將 Supabase 的蛇形命名 (snake_case) 自動轉換回系統適用的駝峰命名 (camelCase)
     globalClients = (c || []).map(x => ({name: x.name, taxId: x.tax_id, address: x.address, receiveDept: x.receive_dept}));
     globalSuppliers = (s || []).map(x => ({name: x.name, code: x.code, phone: x.phone, fax: x.fax}));
     globalCatalog = (cat || []).map(x => ({rowIndex: x.row_index, assetCode: x.asset_code, internalCode: x.internal_code, clientName: x.client_name, productName: x.product_name, unit: x.unit, price: Number(x.price)}));
@@ -456,7 +512,7 @@ function setupSupabaseRealtime() {
         .on('postgres_changes', { event: '*', schema: 'public' }, payload => {
             console.log('🔄 Supabase 偵測到資料庫變更:', payload);
             if (!isSyncing && bgSyncQueue.length === 0) {
-                silentRefreshData(); // 收到推播後自動更新畫面，不需重新整理
+                silentRefreshData(); 
             }
         })
         .subscribe((status) => {
@@ -541,10 +597,13 @@ window.showPrintPreview = function(areaId) {
     if (!controlBar) {
         controlBar = document.createElement('div');
         controlBar.id = 'printControlBar';
-        controlBar.className = 'd-flex justify-content-center p-3 position-fixed w-100 top-0 d-print-none';
-        controlBar.style.cssText = 'z-index: 10500; left: 0; background-color: #343a40; box-shadow: 0 4px 6px rgba(0,0,0,0.3);';
+        controlBar.className = 'd-flex justify-content-center p-3 position-fixed w-100 top-0 d-print-none gap-2';
+        controlBar.style.cssText = 'z-index: 10500; left: 0; background-color: #343a40; box-shadow: 0 4px 6px rgba(0,0,0,0.3); flex-wrap: wrap;';
+        
+        // 🌟 新增：一鍵分享檔案按鈕
         controlBar.innerHTML = `
-            <button onclick="window.print()" class="btn btn-primary fw-bold px-4 py-2 me-3 fs-5 shadow-sm">🖨️ 確認呼叫印表機</button>
+            <button onclick="window.print()" class="btn btn-primary fw-bold px-4 py-2 fs-5 shadow-sm">🖨️ 確認呼叫印表機</button>
+            <button onclick="shareAsPDF('${areaId}')" class="btn btn-success fw-bold px-4 py-2 fs-5 shadow-sm" id="btnSharePdf">📤 分享檔案</button>
             <button onclick="closePrintPreview()" class="btn btn-danger fw-bold px-4 py-2 fs-5 shadow-sm">❌ 關閉預覽並返回</button>
         `;
         document.body.appendChild(controlBar);
@@ -554,6 +613,54 @@ window.showPrintPreview = function(areaId) {
     document.body.style.paddingTop = '80px'; 
     document.body.style.overflow = 'auto'; 
     window.scrollTo(0,0);
+};
+
+// ============================================================================
+// 【全新】一鍵生成 PDF 並呼叫系統分享 (LINE, Gmail 等)
+// ============================================================================
+window.shareAsPDF = async function(areaId) {
+    const targetArea = document.getElementById(areaId);
+    if (!targetArea) return;
+    
+    const btn = document.getElementById('btnSharePdf');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '⏳ 產生中...';
+    btn.disabled = true;
+
+    try {
+        const opt = {
+            margin: 0,
+            filename: `長固單據_${getTodayStr()}.pdf`,
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        };
+
+        const pdfBlob = await html2pdf().set(opt).from(targetArea.children[0]).outputPdf('blob');
+        const file = new File([pdfBlob], opt.filename, { type: 'application/pdf' });
+
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({
+                title: '長固 ERP 單據',
+                text: '附上本次的 PDF 單據，請查收。',
+                files: [file]
+            });
+            showToast("📤 分享選單已開啟");
+        } else {
+            // 如果是在不支援分享的電腦瀏覽器，改為直接下載
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(pdfBlob);
+            link.download = opt.filename;
+            link.click();
+            showToast("⬇️ 已將 PDF 下載至您的裝置");
+        }
+    } catch (e) {
+        console.error("生成 PDF 失敗:", e);
+        alert("產生 PDF 失敗，請確認網路連線或使用電腦版下載。");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
 };
 
 window.closePrintPreview = function() {
@@ -668,7 +775,6 @@ window.initSystemData = function() {
     document.getElementById('splashScreen').style.display = 'flex'; let fakeProgress = 10; setProgress(fakeProgress, '🚀 從 Supabase 極速載入中...');
     const intv = setInterval(() => { fakeProgress += (85 - fakeProgress) * 0.2; setProgress(fakeProgress); }, 100);
     
-    // 【升級】直接從 Supabase 一次拉取全系統資料
     loadDataFromSupabase().then(() => {
         clearInterval(intv); setProgress(100, '✅ 載入完成！');
         
@@ -737,4 +843,3 @@ window.enterSystem = function(modId) {
 };
 
 window.backToHome = function() { document.getElementById('mainApp').style.display = 'none'; document.getElementById('homeMenu').style.display = 'block'; };
-
