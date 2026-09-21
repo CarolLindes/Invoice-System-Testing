@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 模組 1：API 核心、全域狀態與雙軌並行架構 (api_core.js) - 【最終列印分享升級版】
+ * 模組 1：API 核心、全域狀態與雙軌並行架構 (api_core.js) - 【最終列印分享與拆分升級版】
  * ============================================================================
  */
 
@@ -113,8 +113,7 @@ async function dualWriteToSupabase(action, payload) {
                 await supabaseClient.from('invoices').update({ status: '作廢' }).eq('row_idx', payload.rowIdx);
                 if (payload.paperNo) {
                     await supabaseClient.from('sales_details').update({ ship_status: '作廢' }).eq('paper_no', payload.paperNo);
-                    // 【優化】連動將對應的送貨單標記為「已作廢」
-                    await supabaseClient.from('deliveries').update({ status: '已作廢' }).eq('paper_no', payload.paperNo);
+                    await supabaseClient.from('deliveries').update({ status: '已作廢' }).like('paper_no', `%${payload.paperNo}%`);
                 }
             } else if (payload.action === 'edit') {
                 await supabaseClient.from('invoices').update({
@@ -186,8 +185,6 @@ async function dualWriteToSupabase(action, payload) {
                     });
                 }
             }
-            
-            // 【優化】將出貨轉為「待送貨」的動作極速寫入 Supabase，解決延遲問題
             if (payload.newDeliveries && payload.newDeliveries.length > 0) {
                 await supabaseClient.from('deliveries').insert(
                     payload.newDeliveries.map(d => ({
@@ -291,10 +288,33 @@ async function dualWriteToSupabase(action, payload) {
                 await supabaseClient.from('deliveries').update({ status: '已結案', signature: payload.signature }).eq('row_idx', payload.rowIdx);
             }
         }
-        else if (action === 'batchExecuteDeliveries') {
-            await supabaseClient.from('deliveries').update({
-                status: '已送貨', delivery_date: payload.deliveryDate, delivery_method: payload.deliveryMethod, memo: payload.memo
-            }).in('row_idx', payload.rowIndices);
+        // 【全新合併與拆分邏輯】自動處理 Supabase 物理合併與還原拆分
+        else if (action === 'mergeAndExecuteDeliveries') {
+            if (payload.mergedUpdates && payload.mergedUpdates.length > 0) {
+                for (let md of payload.mergedUpdates) {
+                    await supabaseClient.from('deliveries').upsert({
+                        row_idx: md.rowIdx, status: md.status, delivery_date: md.deliveryDate,
+                        delivery_method: md.deliveryMethod, memo: md.memo,
+                        items_str: md.itemsStr, paper_no: md.paperNo, order_no: md.orderNo,
+                        lot: md.lot, expiry: md.expiry
+                    });
+                }
+            }
+            if (payload.rowsToDelete && payload.rowsToDelete.length > 0) {
+                await supabaseClient.from('deliveries').delete().in('row_idx', payload.rowsToDelete);
+            }
+        }
+        else if (action === 'unmergeDeliveries') {
+            await supabaseClient.from('deliveries').delete().eq('row_idx', payload.rowToUnmerge);
+            if (payload.newRows && payload.newRows.length > 0) {
+                let inserts = payload.newRows.map(nr => ({
+                    row_idx: nr.rowIdx, time: nr.time, paper_no: nr.paperNo, client: nr.client,
+                    items_str: nr.itemsStr, status: nr.status, delivery_date: nr.deliveryDate,
+                    delivery_method: nr.deliveryMethod, memo: nr.memo, signature: nr.signature,
+                    staff: nr.staff, order_no: nr.orderNo, lot: nr.lot, expiry: nr.expiry
+                }));
+                await supabaseClient.from('deliveries').insert(inserts);
+            }
         }
 
         console.log(`[雙軌寫入] ${action} 已極速發送至 Supabase`);
@@ -468,6 +488,8 @@ function translateTaskDesc(t) {
         case 'updateDeliveryStatus': return `📦 送貨狀態變更 | 動作: ${p.action === 'sign' ? '簽收結案' : '退回待送'}`;
         case 'editInvLogBatch': return `🔄 修改出貨批號 | 品名: ${p.name||'未知'} -> 新批號: ${p.newLot||'不分批'}`;
         case 'batchExecuteDeliveries': return `🚚 批次執行送貨排程 | 筆數: ${p.rowIndices?.length||0}`;
+        case 'mergeAndExecuteDeliveries': return `🚚 批次執行與自動合併送貨單 | 處理家數: ${p.mergedUpdates?.length||0}`;
+        case 'unmergeDeliveries': return `✂️ 還原拆分送貨單 | 拆分出: ${p.newRows?.length||0}筆`;
         default: return `⚙️ 系統操作 (${t.action})`;
     }
 }
@@ -632,7 +654,7 @@ function debounce(func, delay = 300) {
 }
 
 // ============================================================================
-// 【全新】動態切換紙張版型、解除手機列印限制、PDF 高畫質分享引擎
+// 【強大升級】動態切換紙張版型、解除手機列印限制、PDF 高畫質分享引擎
 // ============================================================================
 window.applyPrintStyle = function(size, layout) {
     let styleNode = document.getElementById('dynamicPrintStyle');
@@ -685,7 +707,7 @@ window.showPrintPreview = function(areaId) {
     if (!controlBar) {
         controlBar = document.createElement('div');
         controlBar.id = 'printControlBar';
-        // 【優化】加入 PDF 分享按鈕與 Flex 排版
+        // 加入 PDF 分享按鈕與 Flex 排版
         controlBar.className = 'd-flex justify-content-center flex-wrap gap-2 p-3 position-fixed w-100 top-0 d-print-none';
         controlBar.style.cssText = 'z-index: 10500; left: 0; background-color: #343a40; box-shadow: 0 4px 6px rgba(0,0,0,0.3);';
         document.body.appendChild(controlBar);
@@ -711,7 +733,7 @@ window.closePrintPreview = function() {
     let controlBar = document.getElementById('printControlBar');
     if(controlBar) controlBar.remove(); 
     
-    // 【修復】還原手機版高度限制
+    // 還原手機版高度限制
     document.documentElement.style.height = '';
     document.documentElement.style.overflow = '';
     document.body.style.height = '';
@@ -734,7 +756,7 @@ window.closePrintPreview = function() {
     document.getElementById('mainApp').style.display = 'block';
 };
 
-// 【全新】分享 PDF 高畫質引擎
+// 【全新修復版】分享 PDF 高畫質引擎 (支援去背印章無損輸出)
 window.sharePdf = async function(areaId) {
     if (typeof html2pdf === 'undefined') {
         alert("PDF 模組載入中，請稍等一秒後再試！");
@@ -743,11 +765,21 @@ window.sharePdf = async function(areaId) {
     showLoading("📄 正在產生高畫質 PDF，請稍候...");
     const element = document.getElementById(areaId);
     
+    // 【關鍵修復】: html2canvas 遇到 mix-blend-mode 會導致圖片破圖甚至變黑
+    // 在產出 PDF 之前，我們瞬間把印章的 mix-blend-mode 移除，並確保允許跨域
+    const imgs = element.querySelectorAll('img');
+    const origStyles = [];
+    imgs.forEach(img => {
+        origStyles.push(img.style.mixBlendMode);
+        img.style.mixBlendMode = 'normal'; 
+        img.setAttribute('crossorigin', 'anonymous');
+    });
+    
     const opt = {
         margin:       0,
         filename:     `長固ERP_單據_${Date.now()}.pdf`,
         image:        { type: 'jpeg', quality: 0.98 },
-        html2canvas:  { scale: 2, useCORS: true, letterRendering: true },
+        html2canvas:  { scale: 2, useCORS: true, allowTaint: false, letterRendering: true },
         jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
     };
     
@@ -759,6 +791,9 @@ window.sharePdf = async function(areaId) {
 
     try {
         const pdfBlob = await html2pdf().set(opt).from(element).output('blob');
+        
+        // 瞬間把印章的去背效果還原回去，讓網頁看起來不變
+        imgs.forEach((img, i) => img.style.mixBlendMode = origStyles[i]);
         hideLoading();
         
         const file = new File([pdfBlob], opt.filename, { type: 'application/pdf' });
@@ -779,6 +814,8 @@ window.sharePdf = async function(areaId) {
             showToast("⬇️ 裝置不支援直接分享，已自動為您下載 PDF。");
         }
     } catch (err) {
+        // 確保發生錯誤時也能還原圖片外觀
+        imgs.forEach((img, i) => img.style.mixBlendMode = origStyles[i]);
         hideLoading();
         alert("產生或分享 PDF 時發生錯誤：" + err.message);
     }
