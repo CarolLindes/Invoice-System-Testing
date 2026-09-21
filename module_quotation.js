@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 模組 5：開立估價單與動態列印 (module_quotation.js)
+ * 模組 5：開立估價單與動態列印 (module_quotation.js) - 【優化版】
  * ============================================================================
  */
 
@@ -218,16 +218,35 @@ window.saveEditQuotation = function() {
     }
     if(items.length === 0) return alert("請至少新增一項品項！");
 
-    const payload = { rowIdx: idx ? parseInt(idx) : null, quoteDate: date, quoteNo: no, clientName: client, useSeal: useSeal, items: items, status: '待確認', staff: myName, memo: memo };
+    let targetRowIdx = idx ? parseInt(idx) : (Date.now() + Math.floor(Math.random() * 1000));
+    let currentStatus = '待確認';
+    let currentMergeId = '';
 
     if(idx) {
         const q = globalQuotes.find(x => x.rowIdx === parseInt(idx));
-        if(q) { q.quoteDate=date; q.quoteNo=no; q.client=client; q.useSeal=useSeal; q.jsonStr=JSON.stringify(items); q.memo=memo; }
+        if(q) { 
+            q.quoteDate=date; q.quoteNo=no; q.client=client; q.useSeal=useSeal; q.jsonStr=JSON.stringify(items); q.memo=memo; 
+            currentStatus = q.status;
+            currentMergeId = q.mergeId;
+        }
     } else {
-        globalQuotes.unshift({ rowIdx: Date.now(), time: Date.now(), quoteNo: no, quoteDate: date, client: client, status: '待確認', jsonStr: JSON.stringify(items), useSeal: useSeal, mergeId: '', staff: myName, memo: memo });
+        globalQuotes.unshift({ rowIdx: targetRowIdx, time: Date.now(), quoteNo: no, quoteDate: date, client: client, status: '待確認', jsonStr: JSON.stringify(items), useSeal: useSeal, mergeId: '', staff: myName, memo: memo });
     }
 
+    // 【優化】直接推入 Supabase 雙軌寫入，防止網路斷線
+    try {
+        if (typeof supabaseClient !== 'undefined') {
+            supabaseClient.from('quotations').upsert({
+                row_idx: targetRowIdx, time: Date.now(), quote_no: no, quote_date: date, 
+                client: client, status: currentStatus, json_str: JSON.stringify(items), 
+                use_seal: useSeal, merge_id: currentMergeId, staff: myName, memo: memo
+            }).then();
+        }
+    } catch(e) { console.error("Supabase 寫入失敗", e); }
+
+    const payload = { rowIdx: idx ? parseInt(idx) : null, quoteDate: date, quoteNo: no, clientName: client, useSeal: useSeal, items: items, status: currentStatus, staff: myName, memo: memo };
     pushToSyncQueue('saveQuotation', payload, null);
+    
     window.renderQuotationList();
     bootstrap.Modal.getInstance(document.getElementById('editQuoModal')).hide();
     showToast("💾 估價單已儲存");
@@ -253,6 +272,10 @@ window.groupMergeQuotations = function() {
     const newMergeId = 'MG_' + Date.now() + '_' + Math.random().toString(36).substr(2,4);
     
     globalQuotes.forEach(q => { if(idsToMerge.includes(q.rowIdx)) q.mergeId = newMergeId; });
+    
+    // 【優化】極速雙軌寫入
+    try { if (typeof supabaseClient !== 'undefined') supabaseClient.from('quotations').update({ merge_id: newMergeId }).in('row_idx', idsToMerge).then(); } catch(e){}
+
     pushToSyncQueue('mergeQuotations', { rowIndices: idsToMerge, mergeId: newMergeId }, null);
     window.renderQuotationList();
     showToast("🔗 估價單已成功合併！");
@@ -273,6 +296,10 @@ window.groupUnmergeQuotations = function() {
 
     if(idsToUnmerge.length === 0) return showToast("勾選的皆為單筆估價單，不需解除合併。");
     globalQuotes.forEach(q => { if(idsToUnmerge.includes(q.rowIdx)) q.mergeId = ''; });
+    
+    // 【優化】極速雙軌寫入
+    try { if (typeof supabaseClient !== 'undefined') supabaseClient.from('quotations').update({ merge_id: '' }).in('row_idx', idsToUnmerge).then(); } catch(e){}
+
     pushToSyncQueue('unmergeQuotations', { rowIndices: idsToUnmerge }, null);
     window.renderQuotationList();
     showToast("✂️ 已解除合併拆分為單筆！");
@@ -294,6 +321,10 @@ window.voidQuotation = function(gid) {
         if(confirm("確定要將此估價單作廢嗎？")) {
             const ids = quotesInGroup.map(q => q.rowIdx);
             quotesInGroup.forEach(q => q.status = '已作廢');
+            
+            // 【優化】極速雙軌寫入
+            try { if (typeof supabaseClient !== 'undefined') supabaseClient.from('quotations').update({ status: '已作廢' }).in('row_idx', ids).then(); } catch(e){}
+
             pushToSyncQueue('updateQuotationStatus', { rowIndices: ids, status: '已作廢' }, null);
             window.renderQuotationList();
         }
@@ -320,6 +351,10 @@ window.confirmVoidQuotationItems = function() {
     if(cbs.length === allItems.length) {
         const ids = tempVoidGroupData.map(q => q.rowIdx);
         tempVoidGroupData.forEach(q => q.status = '已作廢');
+        
+        // 【優化】極速雙軌寫入
+        try { if (typeof supabaseClient !== 'undefined') supabaseClient.from('quotations').update({ status: '已作廢' }).in('row_idx', ids).then(); } catch(e){}
+
         pushToSyncQueue('updateQuotationStatus', { rowIndices: ids, status: '已作廢' }, null);
         window.renderQuotationList();
         bootstrap.Modal.getInstance(document.getElementById('voidQuoItemsModal')).hide();
@@ -341,8 +376,22 @@ window.confirmVoidQuotationItems = function() {
         });
 
         if(voidItems.length > 0) {
+            let newRowIdx = Date.now() + Math.floor(Math.random() * 1000);
             q.jsonStr = JSON.stringify(keepItems);
-            globalQuotes.unshift({ rowIdx: Date.now()+Math.random(), time: Date.now(), quoteNo: q.quoteNo+"-作廢", quoteDate: q.quoteDate, client: q.client, status: '已作廢', jsonStr: JSON.stringify(voidItems), useSeal: q.useSeal, mergeId: '', staff: myName, memo: q.memo });
+            globalQuotes.unshift({ rowIdx: newRowIdx, time: Date.now(), quoteNo: q.quoteNo+"-作廢", quoteDate: q.quoteDate, client: q.client, status: '已作廢', jsonStr: JSON.stringify(voidItems), useSeal: q.useSeal, mergeId: '', staff: myName, memo: q.memo });
+            
+            // 【優化】將拆分與作廢的結果極速雙軌寫入 Supabase，確保不會因為重新整理網頁而遺失
+            try {
+                if (typeof supabaseClient !== 'undefined') {
+                    supabaseClient.from('quotations').update({ json_str: JSON.stringify(keepItems) }).eq('row_idx', q.rowIdx).then();
+                    supabaseClient.from('quotations').insert({
+                        row_idx: newRowIdx, time: Date.now(), quote_no: q.quoteNo+"-作廢", 
+                        quote_date: q.quoteDate, client: q.client, status: '已作廢', 
+                        json_str: JSON.stringify(voidItems), use_seal: q.useSeal, 
+                        merge_id: '', staff: myName, memo: q.memo
+                    }).then();
+                }
+            } catch(e) { console.error("Supabase 拆分寫入失敗", e); }
             
             pushToSyncQueue('splitAndVoidQuotationItems', {
                 rowIdx: q.rowIdx, quoteNo: q.quoteNo, quoteDate: q.quoteDate, clientName: q.client, useSeal: q.useSeal, staff: myName, keepItems: keepItems, voidItems: voidItems
@@ -393,6 +442,10 @@ window.verifyQuotationToInvoice = function(gid) {
 
     const ids = quotesInGroup.map(q => q.rowIdx);
     quotesInGroup.forEach(q => q.status = '已核銷');
+    
+    // 【優化】極速雙軌寫入
+    try { if (typeof supabaseClient !== 'undefined') supabaseClient.from('quotations').update({ status: '已核銷' }).in('row_idx', ids).then(); } catch(e){}
+
     pushToSyncQueue('updateQuotationStatus', { rowIndices: ids, status: '已核銷' }, null);
 
     if (typeof window.reRenderInvoiceItems === "function") window.reRenderInvoiceItems();
@@ -526,5 +579,3 @@ window.printQuotation = function(gid) {
         alert('系統錯誤：找不到估價單列印區塊');
     }
 };
-
-
