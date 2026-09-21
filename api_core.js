@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 模組 1：API 核心、全域狀態與雙軌並行架構 (api_core.js) - 【上半部】
+ * 模組 1：API 核心、全域狀態與雙軌並行架構 (api_core.js) - 【優化版】
  * ============================================================================
  */
 
@@ -88,8 +88,9 @@ async function dualWriteToSupabase(action, payload) {
                 tax: payload.tax, total: payload.totalWithTax, details: payload.detailsStr,
                 paper_no: payload.paperNo, order_no: payload.orderNo, status: '正常', history_log: '[]'
             });
+            // 增強空值防護，確保 items 存在才執行 .map
             if (payload.items && payload.items.length > 0) {
-                const sdArr = payload.items.map((i, idx) => ({
+                const sdArr = (payload.items || []).map((i, idx) => ({
                     row_idx: Date.now() + Math.floor(Math.random() * 1000) + idx,
                     time: payload.invDate, paper_no: payload.paperNo, client: payload.clientName,
                     order_no: payload.orderNo, name: i.name, qty: i.qty, unit: i.unit,
@@ -132,7 +133,8 @@ async function dualWriteToSupabase(action, payload) {
             });
         } 
         else if (action === 'updateShipment') {
-            for (let u of payload.updates) {
+            const updates = payload.updates || [];
+            for (let u of updates) {
                 const { data: sd } = await supabaseClient.from('sales_details').select('*').eq('row_idx', u.rowIdx).single();
                 if (sd) {
                     let newShipped = (sd.shipped_qty || 0) + u.shipQty;
@@ -170,7 +172,7 @@ async function dualWriteToSupabase(action, payload) {
 }
 
 // ============================================================================
-// 背景同步佇列系統 (雙向防呆版)
+// 背景同步佇列系統 (加入 Race Condition 狀態鎖)
 // ============================================================================
 let bgSyncQueue = []; 
 let isSyncing = false; 
@@ -193,8 +195,12 @@ function triggerSync() {
     isSyncing = true; 
     const task = bgSyncQueue[0];
     
+    let isTaskResolved = false; // 狀態鎖定：防止超時與回傳同時發生
+    
     clearTimeout(syncTimeoutTimer);
     syncTimeoutTimer = setTimeout(() => {
+        if (isTaskResolved) return; 
+        isTaskResolved = true;
         console.warn("同步超時(已達28秒)，準備於背景重試", task.action);
         task.retry += 1;
         handleSyncRetry(task);
@@ -204,7 +210,10 @@ function triggerSync() {
     dualWriteToSupabase(task.action, task.payload);
 
     callApi(task.action, task.payload).then(res => {
+        if (isTaskResolved) return; 
+        isTaskResolved = true;
         clearTimeout(syncTimeoutTimer);
+        
         bgSyncQueue.shift(); 
         if(task.callback) task.callback(res); 
         updateSyncIndicator(); 
@@ -213,7 +222,10 @@ function triggerSync() {
         if (bgSyncQueue.length === 0) silentRefreshData();
         else triggerSync();
     }).catch(e => {
+        if (isTaskResolved) return; 
+        isTaskResolved = true;
         clearTimeout(syncTimeoutTimer);
+        
         console.error("背景傳輸異常", e); 
         if (e.message && e.message.includes("DIRTY_READ")) {
             alert(e.message);
@@ -324,6 +336,7 @@ function translateTaskDesc(t) {
         case 'updateDeliveryInfo': return `🚚 更新送貨資訊 | 狀態: ${p.status||''}`;
         case 'updateDeliveryStatus': return `📦 送貨狀態變更 | 動作: ${p.action === 'sign' ? '簽收結案' : '退回待送'}`;
         case 'editInvLogBatch': return `🔄 修改出貨批號 | 品名: ${p.name||'未知'} -> 新批號: ${p.newLot||'不分批'}`;
+        case 'batchExecuteDeliveries': return `🚚 批次執行送貨排程 | 筆數: ${p.rowIndices?.length||0}`;
         default: return `⚙️ 系統操作 (${t.action})`;
     }
 }
@@ -449,14 +462,20 @@ function silentRefreshData() {
 }
 
 // ============================================================================
-// Supabase Realtime 即時監聽器 (0.1秒推播)
+// Supabase Realtime 即時監聽器 (加入 Debounce 防抖機制)
 // ============================================================================
+let realtimeDebounceTimer = null;
+
 function setupSupabaseRealtime() {
     supabaseClient.channel('custom-all-channel')
         .on('postgres_changes', { event: '*', schema: 'public' }, payload => {
             console.log('🔄 Supabase 偵測到資料庫變更:', payload);
             if (!isSyncing && bgSyncQueue.length === 0) {
-                silentRefreshData(); // 收到推播後自動更新畫面，不需重新整理
+                // 收到推播後等待 1.5 秒，避免短時間內大量變更觸發過多請求
+                clearTimeout(realtimeDebounceTimer);
+                realtimeDebounceTimer = setTimeout(() => {
+                    silentRefreshData(); 
+                }, 1500);
             }
         })
         .subscribe((status) => {
@@ -640,7 +659,6 @@ window.onload = function() {
                 let count = typeof res === 'object' ? res.count : res;
                 if(document.getElementById('mqOnline')) document.getElementById('mqOnline').innerText = `👥 ${count} 人`; 
                 if(document.getElementById('navOnlineCount')) document.getElementById('navOnlineCount').innerText = `👥 ${count}`; 
-                // 資料更新已被 Supabase Realtime 接管，此處僅保留人數統計
             }).catch(e => console.log('心跳同步失敗', e)); 
         } 
     }, 15000); 
@@ -668,12 +686,11 @@ window.initSystemData = function() {
     document.getElementById('splashScreen').style.display = 'flex'; let fakeProgress = 10; setProgress(fakeProgress, '🚀 從 Supabase 極速載入中...');
     const intv = setInterval(() => { fakeProgress += (85 - fakeProgress) * 0.2; setProgress(fakeProgress); }, 100);
     
-    // 【升級】直接從 Supabase 一次拉取全系統資料
     loadDataFromSupabase().then(() => {
         clearInterval(intv); setProgress(100, '✅ 載入完成！');
         
         refreshAllUI();
-        setupSupabaseRealtime(); // 啟動即時監聽
+        setupSupabaseRealtime();
         
         const currentMonth = new Date().getMonth();
         const monthCount = globalHistory.filter(h => new Date(h.time).getMonth() === currentMonth).length;
@@ -737,5 +754,3 @@ window.enterSystem = function(modId) {
 };
 
 window.backToHome = function() { document.getElementById('mainApp').style.display = 'none'; document.getElementById('homeMenu').style.display = 'block'; };
-
-
