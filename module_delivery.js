@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 模組 6：送貨追蹤與電子簽收模組 (module_delivery.js) - 【優化版】
+ * 模組 6：送貨追蹤與電子簽收模組 (module_delivery.js) - 【大一統淨化版】
  * 全新獨立模組：負責物流狀態追蹤、A5 送貨單列印與 Canvas 電子簽收
  * ============================================================================
  */
@@ -157,16 +157,6 @@ window.confirmDeliveryAction = function() {
         if (group.length === 1) {
             let d = group[0];
             d.status = '已送貨'; d.deliveryDate = date; d.deliveryMethod = method; d.memo = memo;
-            
-            // 寫入 Supabase (單筆更新狀態)
-            try {
-                if (typeof supabaseClient !== 'undefined') {
-                    supabaseClient.from('deliveries').update({
-                        status: '已送貨', delivery_date: date, delivery_method: method, memo: memo
-                    }).eq('row_idx', d.rowIdx).then();
-                }
-            } catch(e) {}
-            
         } else {
             // 合併多筆品項為一張單據
             let mainD = group[0];
@@ -217,11 +207,6 @@ window.returnDelivery = function(idx) {
     const d = globalDeliveries.find(x => x.rowIdx === idx);
     if(d) {
         d.status = '待送貨';
-        try {
-            if (typeof supabaseClient !== 'undefined') {
-                supabaseClient.from('deliveries').update({ status: '待送貨' }).eq('row_idx', idx).then();
-            }
-        } catch(e){}
     }
     pushToSyncQueue('updateDeliveryStatus', { action: 'return', rowIdx: idx }, null);
     window.renderDeliveryList();
@@ -319,12 +304,6 @@ window.confirmSignature = function() {
     if(d) {
         d.status = '已結案';
         d.signature = base64Sign;
-        
-        try {
-            if (typeof supabaseClient !== 'undefined') {
-                supabaseClient.from('deliveries').update({ status: '已結案', signature: base64Sign }).eq('row_idx', currentDeliverySignRowIdx).then();
-            }
-        } catch(e){}
     }
 
     pushToSyncQueue('updateDeliveryStatus', { action: 'sign', rowIdx: currentDeliverySignRowIdx, signature: base64Sign }, null);
