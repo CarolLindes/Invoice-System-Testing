@@ -1,10 +1,10 @@
 /**
  * ============================================================================
- * 模組 5：開立估價單與動態列印 (module_quotation.js) - 【大一統淨化版】
+ * 模組 5：開立估價單與動態列印 (module_quotation.js) - 【PDF 印章修復版】
  * ============================================================================
  */
 
-// 【新增】強大的日期淨化器：專門處理後台傳來的複雜台北標準時間，確保輸出純淨的 YYYY-MM-DD
+// 強大的日期淨化器：專門處理後台傳來的複雜台北標準時間，確保輸出純淨的 YYYY-MM-DD
 window.cleanDateStr = function(rawDate) {
     if (!rawDate) return getTodayStr();
     const d = new Date(rawDate);
@@ -48,7 +48,6 @@ window.renderQuotationList = debounce(function() {
                 let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
                 let itemsStr = items.map(i => `<div>${i.name} <span class="badge bg-light text-dark border ms-1">x${i.qty}</span></div>`).join('');
                 
-                // 【套用日期淨化器】確保列表顯示乾淨的 YYYY/MM/DD
                 const cleanDate = cleanDateStr(q.quoteDate).replace(/-/g, '/');
                 
                 return `<div class="mt-2 pt-2 border-top">
@@ -105,10 +104,7 @@ window.openQuotationModal = function(idx) {
     if(idx) {
         const q = globalQuotes.find(x => x.rowIdx === idx);
         document.getElementById('e_quoRow').value = idx;
-        
-        // 【套用日期淨化器】確保編輯時，原本的日期能正確塞入 <input type="date"> 中，不會消失或變成今天
         document.getElementById('e_quoDate').value = cleanDateStr(q.quoteDate);
-        
         document.getElementById('e_quoNo').value = q.quoteNo;
         document.getElementById('e_quoClient').value = q.client;
         document.getElementById('e_quoUseSeal').checked = q.useSeal;
@@ -415,7 +411,7 @@ window.verifyQuotationToInvoice = function(gid) {
 };
 
 // ============================================================================
-// 列印估價單 (支援 A4 舒展排版、過濾日期、真實公司大印章)
+// 列印估價單 (支援 A4 舒展排版、過濾日期、真實公司大印章 PDF 無損輸出)
 // ============================================================================
 window.printQuotation = function(gid) {
     const quotesInGroup = globalQuotes.filter(q => q.mergeId === gid || `Single_${q.rowIdx}` === gid);
@@ -424,16 +420,13 @@ window.printQuotation = function(gid) {
     const clientName = quotesInGroup[0].client;
     const quoteNos = quotesInGroup.map(q => q.quoteNo).join(', ');
     
-    // 【套用日期淨化器】確保列印紙本的日期永遠乾淨，顯示 YYYY/MM/DD
     const rawDate = quotesInGroup[0].quoteDate || getTodayStr();
     const dateStr = cleanDateStr(rawDate).replace(/-/g, '/');
     
     const useSeal = quotesInGroup[0].useSeal;
     
-    // 合併備註
     const mainMemo = quotesInGroup.map(q => q.memo).filter(x => x).join(' / ');
 
-    // 取出品項
     let allItems = [];
     quotesInGroup.forEach(q => {
         let items = []; try { items = JSON.parse(q.jsonStr); } catch(e){}
@@ -442,7 +435,6 @@ window.printQuotation = function(gid) {
 
     let totalAmount = 0;
     
-    // 渲染表格內容
     let tbodyHtml = allItems.map((item, idx) => {
         const price = parseFloat(item.price) || 0;
         const qty = parseFloat(item.qty) || 0;
@@ -469,9 +461,10 @@ window.printQuotation = function(gid) {
         `;
     }).join('');
 
+    // 【極度關鍵修復】: crossorigin="anonymous" 確保 Google Drive 圖片能在 html2canvas 跨域渲染不破圖
     const sealHtml = useSeal ? `
         <div style="position: absolute; right: 50px; bottom: 10px; display: flex; align-items: flex-end; pointer-events: none; z-index: 10; opacity: 0.95;">
-            <img src="https://drive.google.com/thumbnail?id=1f6zlONs70zTGucx1h5ttJD1OLzyygXuu&sz=w800" alt="大章" style="width: 150px; height: auto; mix-blend-mode: multiply;">
+            <img src="https://drive.google.com/thumbnail?id=1f6zlONs70zTGucx1h5ttJD1OLzyygXuu&sz=w800" alt="大章" crossorigin="anonymous" style="width: 150px; height: auto; mix-blend-mode: multiply;">
         </div>
     ` : '';
 
