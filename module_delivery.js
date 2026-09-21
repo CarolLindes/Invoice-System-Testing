@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 模組 6：送貨追蹤與電子簽收模組 (module_delivery.js) - 【最終物理合併與拆分升級版】
+ * 模組 6：送貨追蹤與電子簽收模組 (module_delivery.js) - 【最終物理合併、拆分與完美按鈕版】
  * ============================================================================
  */
 
@@ -58,13 +58,12 @@ function buildDeliveryHtml(dataArr, isPending) {
 
         if (isPending) {
             checkboxHtml = `<input class="form-check-input me-3 cb-del" type="checkbox" value="${d.rowIdx}" style="transform: scale(1.3); flex-shrink: 0;">`;
-            actionBtns += `<button class="btn btn-sm btn-outline-danger fw-bold me-2" onclick="voidDeliveryAndInvoice(${d.rowIdx})">作廢</button>`;
             
-            // 【新功能】如果這張單據包含多個發票號碼(有逗號)，代表是合併單，顯示「還原拆分」按鈕
+            // 【優化】按鈕排列順序嚴格遵循：[還原拆分] -> [作廢] -> [執行送貨]
             if (String(d.paperNo).includes(',')) {
                 actionBtns += `<button class="btn btn-sm btn-outline-secondary fw-bold me-2" onclick="unmergeDelivery(${d.rowIdx})">✂️ 還原拆分</button>`;
             }
-            
+            actionBtns += `<button class="btn btn-sm btn-outline-danger fw-bold me-2" onclick="voidDeliveryAndInvoice(${d.rowIdx})">作廢</button>`;
             actionBtns += `<button class="btn btn-sm btn-primary fw-bold" onclick="openDeliveryActionModal([${d.rowIdx}])">執行送貨</button>`;
         } else {
             if (d.status === '已送貨') {
@@ -144,7 +143,7 @@ window.voidDeliveryAndInvoice = function(idx) {
 };
 
 // ============================================================================
-// 2. 【全新升級】批次執行與自動物理合併機制
+// 2. 批次執行與自動物理合併機制 (支援再合併)
 // ============================================================================
 window.groupExecuteDelivery = function() {
     const cbs = document.querySelectorAll('.cb-del:checked');
@@ -213,6 +212,7 @@ window.confirmDeliveryAction = function() {
                 let items = []; try { items = JSON.parse(d.itemsStr); } catch(e){}
                 
                 // 【關鍵】在合併時，將來源發票與單號紀錄在品項內部，為未來的「還原拆分」做準備
+                // 即使是已經被退回的合併單再次合併，也能完美保留最原始的單據來源
                 items.forEach(i => {
                     if(!i._sourcePaperNo) i._sourcePaperNo = d.paperNo;
                     if(!i._sourceOrderNo) i._sourceOrderNo = d.orderNo;
@@ -257,7 +257,7 @@ window.confirmDeliveryAction = function() {
 };
 
 // ============================================================================
-// 【全新升級】還原拆分合併的送貨單
+// 還原拆分合併的送貨單
 // ============================================================================
 window.unmergeDelivery = function(idx) {
     if(!confirm("確定要將此合併送貨單還原拆分為多筆原始單據嗎？")) return;
@@ -303,7 +303,6 @@ window.unmergeDelivery = function(idx) {
         });
     }
 
-    // 實體替換
     globalDeliveries = globalDeliveries.filter(x => x.rowIdx !== idx);
     globalDeliveries.unshift(...newDeliveries);
 
@@ -552,7 +551,6 @@ function buildDeliveryPrintHtml(idx, isPreviewMode) {
     return htmlOutput;
 }
 
-// 產生合成簽名的圖片標籤
 function getSignatureImgHtml(deliveryObj) {
     if (deliveryObj.signature && deliveryObj.signature.length > 50) {
         return `<img src="${deliveryObj.signature}" crossorigin="anonymous" style="max-width: 95%; max-height: 120px; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); mix-blend-mode: multiply;">`;
