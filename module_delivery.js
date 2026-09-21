@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 模組 6：送貨追蹤與電子簽收模組 (module_delivery.js) - 【大一統淨化版】
+ * 模組 6：送貨追蹤與電子簽收模組 (module_delivery.js) - 【作廢連動版】
  * 全新獨立模組：負責物流狀態追蹤、A5 送貨單列印與 Canvas 電子簽收
  * ============================================================================
  */
@@ -62,7 +62,9 @@ function buildDeliveryHtml(dataArr, isPending) {
 
         if (isPending) {
             checkboxHtml = `<input class="form-check-input me-3 cb-del" type="checkbox" value="${d.rowIdx}" style="transform: scale(1.3); flex-shrink: 0;">`;
-            actionBtns = `<button class="btn btn-sm btn-primary fw-bold" onclick="openDeliveryActionModal([${d.rowIdx}])">執行送貨</button>`;
+            // 【優化】新增紅色的「作廢」按鈕
+            actionBtns += `<button class="btn btn-sm btn-outline-danger fw-bold me-2" onclick="voidDeliveryAndInvoice(${d.rowIdx})">作廢</button>`;
+            actionBtns += `<button class="btn btn-sm btn-primary fw-bold" onclick="openDeliveryActionModal([${d.rowIdx}])">執行送貨</button>`;
         } else {
             if (d.status === '已送貨') {
                 actionBtns += `<button class="btn btn-sm btn-outline-danger fw-bold me-1" onclick="returnDelivery(${d.rowIdx})">退回</button>`;
@@ -99,6 +101,53 @@ function buildDeliveryHtml(dataArr, isPending) {
 }
 
 // ============================================================================
+// 【全新升級】作廢送貨單，並雙向連動作廢發票與庫存返還
+// ============================================================================
+window.voidDeliveryAndInvoice = function(idx) {
+    const d = globalDeliveries.find(x => x.rowIdx === idx);
+    if (!d) return;
+    if (!confirm(`確定要作廢此筆送貨作業嗎？\n⚠️ 系統將自動連動：\n1. 作廢關聯的發票 (${d.paperNo})\n2. 註銷銷售明細\n3. 完整返還出貨庫存`)) return;
+
+    // 將送貨單狀態設為已作廢
+    d.status = '已作廢';
+
+    // 尋找並作廢對應的發票
+    let paperNos = d.paperNo.split(',').map(s=>s.trim()).filter(x=>x);
+    paperNos.forEach(pNo => {
+        const h = globalHistory.find(x => x.paperNo === pNo);
+        if (h) h.status = '作廢';
+
+        // 註銷明細並返還庫存
+        globalSalesDetails.forEach(sd => {
+            if (sd.paperNo === pNo && sd.shipStatus !== '作廢') {
+                sd.shipStatus = '作廢';
+                if (sd.shippedQty > 0) {
+                    let inv = globalInventory.find(x=>x.name === sd.name);
+                    if (inv) inv.qty += sd.shippedQty;
+                    globalInvLogs.unshift({ time: Date.now(), staff: myName, name: sd.name, type: '作廢返還', qtyChange: sd.shippedQty, newQty: inv ? inv.qty : sd.shippedQty, memo: `作廢單號: ${pNo}` });
+                }
+            }
+        });
+
+        // 推播給 API 中樞執行 Supabase 雙軌寫入
+        if (h) {
+            pushToSyncQueue('updateInvoiceRecord', {action:'void', rowIdx: h.rowIdx, staff: myName, paperNo: pNo}, null);
+        }
+    });
+
+    // 刷新所有模組 UI
+    if(typeof window.populateLogDropdowns === 'function') window.populateLogDropdowns();
+    if(typeof window.renderHistory === 'function') window.renderHistory();
+    if(typeof window.renderInventory === 'function') window.renderInventory();
+    if(typeof window.renderInvLogs === 'function') window.renderInvLogs();
+    if(typeof window.renderShipments === 'function') window.renderShipments();
+    if(typeof window.generateReport === 'function') window.generateReport();
+    window.renderDeliveryList();
+    
+    showToast("🗑️ 已作廢送貨單，並成功連動註銷發票與返還庫存");
+};
+
+// ============================================================================
 // 2. 執行送貨與編輯資訊 (Delivery Action)
 // ============================================================================
 window.groupExecuteDelivery = function() {
@@ -112,7 +161,6 @@ window.openDeliveryActionModal = function(rowIndices) {
     document.getElementById('da_rowIndices').value = JSON.stringify(rowIndices);
     document.getElementById('da_date').value = getTodayStr();
     
-    // 動態新增兩個送貨方式選項（若尚未存在）
     const methodSelect = document.getElementById('da_method');
     if (!methodSelect.querySelector('option[value="工廠直送"]')) {
         methodSelect.insertAdjacentHTML('beforeend', '<option value="工廠直送">工廠直送</option><option value="親自取貨">親自取貨</option>');
@@ -121,7 +169,6 @@ window.openDeliveryActionModal = function(rowIndices) {
     document.getElementById('da_method').value = '';
     document.getElementById('da_memo').value = '';
 
-    // 若為單筆編輯，載入既有資料
     if (rowIndices.length === 1) {
         const d = globalDeliveries.find(x => x.rowIdx === rowIndices[0]);
         if (d) {
@@ -142,7 +189,6 @@ window.confirmDeliveryAction = function() {
 
     if (!date || !method) return alert("送貨日期與送貨方式為必填！");
 
-    // 【智慧合併邏輯】：前端先行合併預覽，後端同步處理
     let clientGroups = {};
     ids.forEach(idx => {
         let d = globalDeliveries.find(x => x.rowIdx === idx);
@@ -158,7 +204,6 @@ window.confirmDeliveryAction = function() {
             let d = group[0];
             d.status = '已送貨'; d.deliveryDate = date; d.deliveryMethod = method; d.memo = memo;
         } else {
-            // 合併多筆品項為一張單據
             let mainD = group[0];
             let mergedItems = [];
             let pNos = new Set(mainD.paperNo.split(',').map(s=>s.trim()).filter(x=>x));
@@ -173,7 +218,6 @@ window.confirmDeliveryAction = function() {
                     (d.orderNo||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>oNos.add(x));
                     (d.lot||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>lots.add(x));
                     (d.expiry||'').split(',').map(s=>s.trim()).filter(x=>x).forEach(x=>exps.add(x));
-                    // 移除被合併的子項目
                     globalDeliveries = globalDeliveries.filter(x => x.rowIdx !== d.rowIdx); 
                 }
                 mergedItems.push(...items);
@@ -205,9 +249,7 @@ window.confirmDeliveryAction = function() {
 window.returnDelivery = function(idx) {
     if(!confirm("確定要將此筆資料退回「待送貨」狀態嗎？")) return;
     const d = globalDeliveries.find(x => x.rowIdx === idx);
-    if(d) {
-        d.status = '待送貨';
-    }
+    if(d) d.status = '待送貨';
     pushToSyncQueue('updateDeliveryStatus', { action: 'return', rowIdx: idx }, null);
     window.renderDeliveryList();
     showToast("⏪ 已退回待送貨");
@@ -219,13 +261,11 @@ let isDrawing = false;
 window.openSignModal = function(idx) {
     currentDeliverySignRowIdx = idx;
     
-    // 生成上方迷你 A5 預覽圖
     const previewContainer = document.getElementById('ds_previewContainer');
-    previewContainer.innerHTML = buildDeliveryPrintHtml(idx, true); // true 代表產生迷你預覽版
+    previewContainer.innerHTML = buildDeliveryPrintHtml(idx, true);
 
     bootstrap.Modal.getOrCreateInstance(document.getElementById('deliverySignModal')).show();
     
-    // 延遲初始化 Canvas，確保 Modal 展開後能抓到正確寬高
     setTimeout(() => {
         initSignaturePad();
     }, 300);
@@ -235,7 +275,6 @@ function initSignaturePad() {
     signatureCanvas = document.getElementById('signaturePad');
     signatureCtx = signatureCanvas.getContext('2d');
     
-    // 解決高解析度模糊問題
     const rect = signatureCanvas.parentElement.getBoundingClientRect();
     signatureCanvas.width = rect.width;
     signatureCanvas.height = 250;
@@ -251,7 +290,6 @@ function initSignaturePad() {
     signatureCanvas.onmouseup = stopDrawing;
     signatureCanvas.onmouseout = stopDrawing;
 
-    // 支援手機觸控
     signatureCanvas.ontouchstart = (e) => { e.preventDefault(); startDrawing(e.touches[0]); };
     signatureCanvas.ontouchmove = (e) => { e.preventDefault(); draw(e.touches[0]); };
     signatureCanvas.ontouchend = (e) => { e.preventDefault(); stopDrawing(); };
@@ -286,7 +324,6 @@ window.clearSignature = function() {
 window.confirmSignature = function() {
     if (!currentDeliverySignRowIdx) return;
     
-    // 檢查是否有簽名 (簡單透過像素比對，全白代表沒簽)
     const blank = document.createElement('canvas');
     blank.width = signatureCanvas.width;
     blank.height = signatureCanvas.height;
@@ -314,7 +351,7 @@ window.confirmSignature = function() {
 };
 
 // ============================================================================
-// 4. 【升級版】完美還原 A5 實體送貨單 (含分頁列印防破圖引擎)
+// 4. 完美還原 A5 實體送貨單 (含分頁列印防破圖引擎)
 // ============================================================================
 window.printDeliverySlip = function(idx) {
     const html = buildDeliveryPrintHtml(idx, false);
@@ -334,7 +371,6 @@ function buildDeliveryPrintHtml(idx, isPreviewMode) {
     
     const dateStr = d.deliveryDate ? d.deliveryDate.replace(/-/g, '/') : getTodayStr().replace(/-/g, '/');
     
-    // 【核心邏輯】：A5 橫向排版，強制每 5 個品項切為一頁
     const ROWS_PER_PAGE = 5;
     const totalPages = Math.max(1, Math.ceil(items.length / ROWS_PER_PAGE));
     
@@ -371,7 +407,6 @@ function buildDeliveryPrintHtml(idx, isPreviewMode) {
                 `;
                 globalItemIndex++;
             } else {
-                // 不足 5 項時，強制填補空列維持表格高度一致
                 tbodyHtml += `
                     <tr>
                         <td style="border: 1px solid #000; padding: 5px; height: 35px;">&nbsp;</td>
@@ -385,7 +420,6 @@ function buildDeliveryPrintHtml(idx, isPreviewMode) {
             }
         }
 
-        // 加入 CSS 的強制分頁符號：page-break-after
         const containerStyle = isPreviewMode 
             ? `width: 100%; min-width: 600px; transform: scale(0.9); transform-origin: top left; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000; margin-bottom: 20px; background: #fff; padding: 15px; border: 1px solid #ccc;` 
             : `width: 100%; max-width: 1000px; margin: 0 auto; background: #fff; padding: 10mm 15mm; box-sizing: border-box; font-family: 'MingLiU', '微軟正黑體', sans-serif; color: #000; min-height: 130mm; display: flex; flex-direction: column; page-break-after: ${page < totalPages ? 'always' : 'auto'};`;
